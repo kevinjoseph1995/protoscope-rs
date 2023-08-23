@@ -1,0 +1,6 @@
+[workspace]
+
+members = [
+    "protoscope-rs-bin",
+    "protoscope-rs-lib",
+]
