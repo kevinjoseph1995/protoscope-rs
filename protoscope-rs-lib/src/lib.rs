@@ -1,3 +1,5 @@
+use num_traits::NumCast;
+
 type ByteIterator<'a> = std::slice::Iter<'a, u8>;
 type OutputByteIterator<'a> = std::slice::IterMut<'a, u8>;
 
@@ -90,10 +92,12 @@ macro_rules! expand_decode_trait_of_unsigned_types {
             impl DecodeVarint for $type {
                 fn decode_varint(iter: ByteIterator) -> Result<(Self, ByteIterator)> {
                     let (u64_value, it) = decode_varint_impl(iter)?;
-                    if u64_value > <$type>::MAX as u64 {
+                    let output  = <$type as NumCast>::from(u64_value);
+                    if let Some(output) = output {
+                        return Ok((output as $type, it));
+                    }else{
                         return Err(ProtoscopeRsError::DecodeOverflow);
                     }
-                    Ok((u64_value as $type, it))
                 }
             }
         )*
@@ -101,6 +105,57 @@ macro_rules! expand_decode_trait_of_unsigned_types {
 }
 
 expand_decode_trait_of_unsigned_types![u8, u16, u32, u64];
+
+fn zigzag_encode(input: i64) -> u64 {
+    if input < 0 {
+        (input.abs() * 2 - 1) as u64
+    } else {
+        (input * 2) as u64
+    }
+}
+
+fn zigzag_decode(input: u64) -> i64 {
+    if input % 2 == 0 {
+        (input / 2) as i64
+    } else {
+        -(((input + 1) / 2) as i64)
+    }
+}
+
+macro_rules! expand_encode_trait_of_signed_types {
+    ( $( $type:ty ),* ) => {
+        $(
+            impl EncodeVarint for $type {
+                fn encode_varint(&self, iter: OutputByteIterator) -> Result<usize> {
+                    encode_varint_impl(zigzag_encode(*self as i64), iter)
+                }
+            }
+        )*
+    };
+}
+
+expand_encode_trait_of_signed_types![i8, i16, i32, i64];
+
+macro_rules! expand_decode_trait_of_signed_types {
+    ( $( $type:ty ),* ) => {
+        $(
+            impl DecodeVarint for $type {
+                fn decode_varint(iter: ByteIterator) -> Result<(Self, ByteIterator)> {
+                    let (u64_value, it) = decode_varint_impl(iter)?;
+                    let i64_value = zigzag_decode(u64_value);
+                    let output = <$type as NumCast>::from(i64_value);
+                    if let Some(output) = output {
+                        Ok((output, it))
+                    }else{
+                        return Err(ProtoscopeRsError::DecodeOverflow);
+                    }
+                }
+            }
+        )*
+    };
+}
+
+expand_decode_trait_of_signed_types![i8, i16, i32, i64];
 
 #[cfg(test)]
 mod tests {
@@ -222,6 +277,34 @@ mod tests {
             .encode_varint(buffer.iter_mut())
             .is_ok_and(|num_bytes_encode| {
                 u16::decode_varint(buffer[0..num_bytes_encode].iter())
+                    .is_err_and(|err| err == ProtoscopeRsError::DecodeOverflow)
+            }));
+    }
+
+    #[test]
+    fn test_zigzag() {
+        assert!(zigzag_decode(zigzag_encode(10)) == 10);
+        assert!(zigzag_decode(zigzag_encode(-10)) == -10);
+    }
+
+    #[test]
+    fn test_siged_encode_decode_varint_trait_implementation() {
+        let mut buffer: Vec<u8> = vec![0; 10];
+        assert!((-126i8)
+            .encode_varint(buffer.iter_mut())
+            .is_ok_and(|num_bytes_encode| {
+                i8::decode_varint(buffer[0..num_bytes_encode].iter())
+                    .is_ok_and(|(value, _)| value == -126i8)
+            }));
+    }
+
+    #[test]
+    fn test_siged_encode_decode_overflow() {
+        let mut buffer: Vec<u8> = vec![0; 10];
+        assert!((i16::MIN)
+            .encode_varint(buffer.iter_mut())
+            .is_ok_and(|num_bytes_encode| {
+                i8::decode_varint(buffer[0..num_bytes_encode].iter())
                     .is_err_and(|err| err == ProtoscopeRsError::DecodeOverflow)
             }));
     }
