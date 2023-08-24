@@ -107,19 +107,15 @@ macro_rules! expand_decode_trait_of_unsigned_types {
 expand_decode_trait_of_unsigned_types![u8, u16, u32, u64];
 
 fn zigzag_encode(input: i64) -> u64 {
-    if input < 0 {
-        (input.abs() * 2 - 1) as u64
-    } else {
-        (input * 2) as u64
-    }
+    return ((input >> (64 - 1)) as u64 /*Arithmetic right shift here just propagates the sign-bit from the most significant bit to all the other bits */)
+            ^  /* XOR */
+            ((input << 1) as u64)/*Regular logical bitwise left-shit operation*/;
 }
 
 fn zigzag_decode(input: u64) -> i64 {
-    if input % 2 == 0 {
-        (input / 2) as i64
-    } else {
-        -(((input + 1) / 2) as i64)
-    }
+    (input >> 1) as i64 
+    ^ /* XOR */ 
+    -((input & 1) as i64) /*Extract the sign bit from the least-significant bit and propagate it to the rest of the bits*/
 }
 
 macro_rules! expand_encode_trait_of_signed_types {
@@ -288,14 +284,26 @@ mod tests {
     }
 
     #[test]
-    fn test_siged_encode_decode_varint_trait_implementation() {
+    fn test_signed_encode_decode_varint_trait_implementation() {
         let mut buffer: Vec<u8> = vec![0; 10];
-        assert!((-126i8)
-            .encode_varint(buffer.iter_mut())
-            .is_ok_and(|num_bytes_encode| {
-                i8::decode_varint(buffer[0..num_bytes_encode].iter())
-                    .is_ok_and(|(value, _)| value == -126i8)
-            }));
+
+        for input in i64::MIN..(i64::MIN + 100) {
+            assert!(input
+                .encode_varint(buffer.iter_mut())
+                .is_ok_and(|num_bytes_encoded| {
+                    i64::decode_varint(buffer[0..num_bytes_encoded].iter())
+                        .is_ok_and(|(output, _)| output == input)
+                }));
+        }
+
+        for input in (i64::MAX - 100)..=(i64::MAX) {
+            assert!(input
+                .encode_varint(buffer.iter_mut())
+                .is_ok_and(|num_bytes_encoded| {
+                    i64::decode_varint(buffer[0..num_bytes_encoded].iter())
+                        .is_ok_and(|(output, _)| output == input)
+                }));
+        }
     }
 
     #[test]
