@@ -2,7 +2,7 @@ use crate::{ByteIterator, OutputByteIterator, ProtoscopeRsError, Result};
 
 fn encode_internal<const N: usize>(
     encoded_bytes: [u8; N],
-    mut iter: OutputByteIterator,
+    iter: &mut OutputByteIterator,
 ) -> Result<usize> {
     for byte in encoded_bytes {
         match iter.next() {
@@ -16,14 +16,14 @@ fn encode_internal<const N: usize>(
 }
 
 pub trait EncodeI64: Sized {
-    fn encode(&self, iter: OutputByteIterator) -> Result<usize> {
+    fn encode(&self, iter: &mut OutputByteIterator) -> Result<usize> {
         encode_internal(self.get_little_endian_byte_representation(), iter)
     }
     fn get_little_endian_byte_representation(&self) -> [u8; 8];
 }
 
 pub trait EncodeI32: Sized {
-    fn encode(&self, iter: OutputByteIterator) -> Result<usize> {
+    fn encode(&self, iter: &mut OutputByteIterator) -> Result<usize> {
         encode_internal(self.get_little_endian_byte_representation(), iter)
     }
     fn get_little_endian_byte_representation(&self) -> [u8; 4];
@@ -41,7 +41,7 @@ impl EncodeI32 for f32 {
 }
 
 trait DecodeI64 {
-    fn decode(mut iter: ByteIterator) -> Result<(Self, ByteIterator)>
+    fn decode(iter: &mut ByteIterator) -> Result<Self>
     where
         Self: Sized,
     {
@@ -52,14 +52,14 @@ trait DecodeI64 {
                 Some(input_byte) => (*input_byte).clone(),
             };
         }
-        Ok((Self::decode_from_bytes(raw_bytes), iter))
+        Ok(Self::decode_from_bytes(raw_bytes))
     }
 
     fn decode_from_bytes(raw_bytes: [u8; 8]) -> Self;
 }
 
 trait DecodeI32 {
-    fn decode(mut iter: ByteIterator) -> Result<(Self, ByteIterator)>
+    fn decode(iter: &mut ByteIterator) -> Result<Self>
     where
         Self: Sized,
     {
@@ -70,9 +70,8 @@ trait DecodeI32 {
                 Some(input_byte) => (*input_byte).clone(),
             };
         }
-        Ok((Self::decode_from_bytes(raw_bytes), iter))
+        Ok(Self::decode_from_bytes(raw_bytes))
     }
-
     fn decode_from_bytes(raw_bytes: [u8; 4]) -> Self;
 }
 
@@ -96,9 +95,9 @@ mod tests {
     fn test_floating_types() {
         let mut buffer: Vec<u8> = vec![0; 8];
         assert!(1.0f32
-            .encode(buffer.iter_mut())
+            .encode(&mut buffer.iter_mut())
             .is_ok_and(|num_bytes_encoded| {
-                f32::decode(buffer[0..num_bytes_encoded].into_iter()).is_ok_and(|(f32_value, _)| {
+                f32::decode(&mut buffer[0..num_bytes_encoded].into_iter()).is_ok_and(|f32_value| {
                     f32_value
                         .to_le_bytes()
                         .into_iter()
@@ -108,9 +107,9 @@ mod tests {
             }));
 
         assert!(f32::MIN
-            .encode(buffer.iter_mut())
+            .encode(&mut buffer.iter_mut())
             .is_ok_and(|num_bytes_encoded| {
-                f32::decode(buffer[0..num_bytes_encoded].into_iter()).is_ok_and(|(f32_value, _)| {
+                f32::decode(&mut buffer[0..num_bytes_encoded].into_iter()).is_ok_and(|f32_value| {
                     f32_value
                         .to_le_bytes()
                         .into_iter()
@@ -120,9 +119,9 @@ mod tests {
             }));
 
         assert!(f64::MIN
-            .encode(buffer.iter_mut())
+            .encode(&mut buffer.iter_mut())
             .is_ok_and(|num_bytes_encoded| {
-                f64::decode(buffer[0..num_bytes_encoded].into_iter()).is_ok_and(|(f64_value, _)| {
+                f64::decode(&mut buffer[0..num_bytes_encoded].into_iter()).is_ok_and(|f64_value| {
                     f64_value
                         .to_le_bytes()
                         .into_iter()
@@ -132,9 +131,9 @@ mod tests {
             }));
 
         assert!(f64::MAX
-            .encode(buffer.iter_mut())
+            .encode(&mut buffer.iter_mut())
             .is_ok_and(|num_bytes_encoded| {
-                f64::decode(buffer[0..num_bytes_encoded].into_iter()).is_ok_and(|(f64_value, _)| {
+                f64::decode(&mut buffer[0..num_bytes_encoded].into_iter()).is_ok_and(|f64_value| {
                     f64_value
                         .to_le_bytes()
                         .into_iter()
@@ -148,7 +147,7 @@ mod tests {
     fn test_floating_types_error_path() {
         let mut buffer: Vec<u8> = vec![0, 0];
         assert!(1.0f32
-            .encode(buffer.iter_mut())
+            .encode(&mut buffer.iter_mut())
             .is_err_and(|err| { err == ProtoscopeRsError::BufferFull }));
     }
 }

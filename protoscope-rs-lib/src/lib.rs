@@ -5,6 +5,8 @@ pub enum ProtoscopeRsError {
     VarintOverflow,
     DecodeOverflow,
     BufferFull,
+    LengthMismatch,
+    UtfDecoding,
     Eof,
 }
 
