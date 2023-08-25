@@ -15,14 +15,14 @@ fn encode_internal<const N: usize>(
     Ok(N)
 }
 
-trait EncodeI64: Sized {
+pub trait EncodeI64: Sized {
     fn encode(&self, iter: OutputByteIterator) -> Result<usize> {
         encode_internal(self.get_little_endian_byte_representation(), iter)
     }
     fn get_little_endian_byte_representation(&self) -> [u8; 8];
 }
 
-trait EncodeI32: Sized {
+pub trait EncodeI32: Sized {
     fn encode(&self, iter: OutputByteIterator) -> Result<usize> {
         encode_internal(self.get_little_endian_byte_representation(), iter)
     }
@@ -94,22 +94,61 @@ mod tests {
 
     #[test]
     fn test_floating_types() {
-        let mut buffer: Vec<u8> = vec![0, 8];
-        let a = 1.0f32
+        let mut buffer: Vec<u8> = vec![0; 8];
+        assert!(1.0f32
             .encode(buffer.iter_mut())
             .is_ok_and(|num_bytes_encoded| {
                 f32::decode(buffer[0..num_bytes_encoded].into_iter()).is_ok_and(|(f32_value, _)| {
-                    println!("{}", f32_value);
                     f32_value
                         .to_le_bytes()
                         .into_iter()
                         .zip(1.0f32.to_le_bytes().iter())
-                        .all(|(float1_u8, float2_u8)| {
-                            println!("{} {}", float1_u8, float2_u8);
-                            float1_u8 == *float2_u8
-                        })
+                        .all(|(float1_u8, float2_u8)| float1_u8 == *float2_u8)
                 })
-            });
-        assert!(a);
+            }));
+
+        assert!(f32::MIN
+            .encode(buffer.iter_mut())
+            .is_ok_and(|num_bytes_encoded| {
+                f32::decode(buffer[0..num_bytes_encoded].into_iter()).is_ok_and(|(f32_value, _)| {
+                    f32_value
+                        .to_le_bytes()
+                        .into_iter()
+                        .zip(f32::MIN.to_le_bytes().iter())
+                        .all(|(float1_u8, float2_u8)| float1_u8 == *float2_u8)
+                })
+            }));
+
+        assert!(f64::MIN
+            .encode(buffer.iter_mut())
+            .is_ok_and(|num_bytes_encoded| {
+                f64::decode(buffer[0..num_bytes_encoded].into_iter()).is_ok_and(|(f64_value, _)| {
+                    f64_value
+                        .to_le_bytes()
+                        .into_iter()
+                        .zip(f64::MIN.to_le_bytes().iter())
+                        .all(|(float1_u8, float2_u8)| float1_u8 == *float2_u8)
+                })
+            }));
+
+        assert!(f64::MAX
+            .encode(buffer.iter_mut())
+            .is_ok_and(|num_bytes_encoded| {
+                f64::decode(buffer[0..num_bytes_encoded].into_iter()).is_ok_and(|(f64_value, _)| {
+                    f64_value
+                        .to_le_bytes()
+                        .into_iter()
+                        .zip(f64::MAX.to_le_bytes().iter())
+                        .all(|(float1_u8, float2_u8)| float1_u8 == *float2_u8)
+                })
+            }));
+    }
+
+    #[test]
+    fn test_floating_types_error_path() {
+        let mut buffer: Vec<u8> = vec![0, 0];
+        assert!(1.0f32
+            .encode(buffer.iter_mut())
+            .is_err_and(|err| { err == ProtoscopeRsError::BufferFull }));
     }
 }

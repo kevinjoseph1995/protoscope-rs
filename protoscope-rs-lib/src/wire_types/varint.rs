@@ -25,7 +25,7 @@ fn encode_varint_impl(value: u64, mut iter: OutputByteIterator) -> Result<usize>
     Ok(bytes_encoded)
 }
 
-trait EncodeVarint {
+pub trait EncodeVarint {
     fn encode(&self, iter: OutputByteIterator) -> Result<usize>;
 }
 
@@ -79,7 +79,7 @@ fn decode_varint_impl(mut iter: ByteIterator) -> Result<(u64, ByteIterator)> {
     Ok((decoded_value, iter.clone()))
 }
 
-trait DecodeVarint {
+pub trait DecodeVarint {
     fn decode(iter: ByteIterator) -> Result<(Self, ByteIterator)>
     where
         Self: Sized;
