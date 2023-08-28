@@ -1,11 +1,35 @@
-use crate::{ProtoscopeRsError, OutputByteIterator, Result, ByteIterator};
+use crate::wire_types::{Decode, Encode};
+use crate::{ByteIterator, OutputByteIterator, ProtoscopeRsError, Result};
 use num_traits::NumCast;
-
 
 const MAX_NUMBER_OF_BYTES: usize = ((std::mem::size_of::<u64>() * 8) + 7 - 1) / 7;
 
+macro_rules! expand_encode_trait_of_unsigned_types {
+    ( $( $type:ty ),* ) => {
+        $(
+            impl<'a> Encode<'a> for $type {
+                fn encode(&self, iter:  &mut OutputByteIterator) -> Result<usize> {
+                    encode_varint_impl(*self as u64, iter)
+                }
+            }
+        )*
+    };
+}
+
+expand_encode_trait_of_unsigned_types![u32, u64];
+
+impl<'a> Encode<'a> for bool {
+    fn encode(&self, iter: &mut OutputByteIterator) -> Result<usize> {
+        if *self {
+            1i32.encode(iter)
+        } else {
+            0i32.encode(iter)
+        }
+    }
+}
+
 #[unroll::unroll_for_loops]
-fn encode_varint_impl(value: u64,  iter:  &mut OutputByteIterator) -> Result<usize> {
+fn encode_varint_impl(value: u64, iter: &mut OutputByteIterator) -> Result<usize> {
     let mut value_copy = value;
     let mut bytes_encoded = 0;
     for _ in 0..MAX_NUMBER_OF_BYTES {
@@ -25,36 +49,8 @@ fn encode_varint_impl(value: u64,  iter:  &mut OutputByteIterator) -> Result<usi
     Ok(bytes_encoded)
 }
 
-pub trait EncodeVarint {
-    fn encode(&self, iter: &mut OutputByteIterator) -> Result<usize>;
-}
-
-macro_rules! expand_encode_trait_of_unsigned_types {
-    ( $( $type:ty ),* ) => {
-        $(
-            impl EncodeVarint for $type {
-                fn encode(&self, iter:  &mut OutputByteIterator) -> Result<usize> {
-                    encode_varint_impl(*self as u64, iter)
-                }
-            }
-        )*
-    };
-}
-
-expand_encode_trait_of_unsigned_types![u8, u16, u32, u64];
-
-impl EncodeVarint for bool {
-    fn encode(&self, iter:  &mut OutputByteIterator) -> Result<usize> {
-        if *self {
-            1i32.encode(iter)
-        }else{
-            0i32.encode(iter)
-        }
-    }
-}
-
 #[unroll::unroll_for_loops]
-fn decode_varint_impl(iter:  &mut ByteIterator) -> Result<u64> {
+fn decode_varint_impl(iter: &mut ByteIterator) -> Result<u64> {
     match iter.clone().peekable().peek() {
         None => return Err(ProtoscopeRsError::Eof),
         _ => {}
@@ -79,16 +75,10 @@ fn decode_varint_impl(iter:  &mut ByteIterator) -> Result<u64> {
     Ok(decoded_value)
 }
 
-pub trait DecodeVarint {
-    fn decode(iter:  &mut ByteIterator) -> Result<Self>
-    where
-        Self: Sized;
-}
-
 macro_rules! expand_decode_trait_of_unsigned_types {
     ( $( $type:ty ),* ) => {
         $(
-            impl DecodeVarint for $type {
+            impl Decode for $type {
                 fn decode(iter:  &mut ByteIterator) -> Result<Self> {
                     let u64_value = decode_varint_impl(iter)?;
                     let output  = <$type as NumCast>::from(u64_value);
@@ -103,18 +93,19 @@ macro_rules! expand_decode_trait_of_unsigned_types {
     };
 }
 
-expand_decode_trait_of_unsigned_types![u8, u16, u32, u64];
+expand_decode_trait_of_unsigned_types![u32, u64];
 
-impl DecodeVarint for bool {
-    fn decode(iter:  &mut ByteIterator) -> Result<Self>
+impl Decode for bool {
+    fn decode(iter: &mut ByteIterator) -> Result<Self>
     where
-        Self: Sized {
+        Self: Sized,
+    {
         let i32_value = i32::decode(iter)?;
         if i32_value == 0 {
             return Ok(false);
-        }else if i32_value == 1 {
+        } else if i32_value == 1 {
             return Ok(true);
-        }else{
+        } else {
             return Err(ProtoscopeRsError::DecodeOverflow);
         }
     }
@@ -127,15 +118,15 @@ fn zigzag_encode(input: i64) -> u64 {
 }
 
 fn zigzag_decode(input: u64) -> i64 {
-    (input >> 1) as i64 
-    ^ /* XOR */ 
+    (input >> 1) as i64
+    ^ /* XOR */
     -((input & 1) as i64) /*Extract the sign bit from the least-significant bit and propagate it to the rest of the bits*/
 }
 
 macro_rules! expand_encode_trait_of_signed_types {
     ( $( $type:ty ),* ) => {
         $(
-            impl EncodeVarint for $type {
+            impl<'a> Encode<'a> for $type {
                 fn encode(&self, iter:&mut OutputByteIterator) -> Result<usize> {
                     encode_varint_impl(zigzag_encode(*self as i64), iter)
                 }
@@ -144,12 +135,12 @@ macro_rules! expand_encode_trait_of_signed_types {
     };
 }
 
-expand_encode_trait_of_signed_types![i8, i16, i32, i64];
+expand_encode_trait_of_signed_types![i32, i64];
 
 macro_rules! expand_decode_trait_of_signed_types {
     ( $( $type:ty ),* ) => {
         $(
-            impl DecodeVarint for $type {
+            impl Decode for $type {
                 fn decode(iter: &mut ByteIterator) -> Result<Self> {
                     let u64_value = decode_varint_impl(iter)?;
                     let i64_value = zigzag_decode(u64_value);
@@ -165,7 +156,7 @@ macro_rules! expand_decode_trait_of_signed_types {
     };
 }
 
-expand_decode_trait_of_signed_types![i8, i16, i32, i64];
+expand_decode_trait_of_signed_types![i32, i64];
 
 #[cfg(test)]
 mod tests {
@@ -186,22 +177,15 @@ mod tests {
     #[test]
     fn test_extract_from_encoded_varint_multiple() {
         let mut iter = [0x96u8, 0x01u8, 0xc8u8, 0x03u8, 0xacu8, 0x02u8].iter();
-        
-        let value = decode_varint_impl(&mut iter);
-        assert!(value.is_ok_and(|value| {
-            value == 150
-        }));
-        
 
         let value = decode_varint_impl(&mut iter);
-        assert!(value.is_ok_and(|value| {
-            value == 456
-        }));
+        assert!(value.is_ok_and(|value| { value == 150 }));
 
         let value = decode_varint_impl(&mut iter);
-        assert!(value.is_ok_and(|value| {
-            value == 300
-        }));
+        assert!(value.is_ok_and(|value| { value == 456 }));
+
+        let value = decode_varint_impl(&mut iter);
+        assert!(value.is_ok_and(|value| { value == 300 }));
         let value = decode_varint_impl(&mut iter);
         assert!(value.is_err_and(|err| { err == ProtoscopeRsError::Eof }));
     }
@@ -216,20 +200,20 @@ mod tests {
     fn test_encode_varint() {
         let mut buffer: Vec<u8> = vec![0; 10];
         for value in (std::u64::MAX - 2000)..=std::u64::MAX {
-            assert!(
-                encode_varint_impl(value, &mut buffer.iter_mut()).is_ok_and(|num_bytes_encode| {
+            assert!(encode_varint_impl(value, &mut buffer.iter_mut()).is_ok_and(
+                |num_bytes_encode| {
                     decode_varint_impl(&mut buffer[0..num_bytes_encode].iter())
                         .is_ok_and(|value| value == value)
-                })
-            );
+                }
+            ));
         }
         for value in 0..2000 {
-            assert!(
-                encode_varint_impl(value, &mut buffer.iter_mut()).is_ok_and(|num_bytes_encode| {
+            assert!(encode_varint_impl(value, &mut buffer.iter_mut()).is_ok_and(
+                |num_bytes_encode| {
                     decode_varint_impl(&mut buffer[0..num_bytes_encode].iter())
                         .is_ok_and(|value| value == value)
-                })
-            );
+                }
+            ));
         }
     }
 
@@ -243,32 +227,28 @@ mod tests {
     #[test]
     fn test_unsiged_encode_decode_varint_trait_implementation() {
         let mut buffer: Vec<u8> = vec![0; 10];
-        assert!((150u8)
+        assert!((150u32)
             .encode(&mut buffer.iter_mut())
             .is_ok_and(|num_bytes_encode| {
-                u8::decode(&mut buffer[0..num_bytes_encode].iter())
-                    .is_ok_and(|value| value == 150)
-            }));
-
-        assert!((150u16)
-            .encode(&mut buffer.iter_mut())
-            .is_ok_and(|num_bytes_encode| {
-                u16::decode(&mut buffer[0..num_bytes_encode].iter())
-                    .is_ok_and(|value| value == 150)
+                u32::decode(&mut buffer[0..num_bytes_encode].iter()).is_ok_and(|value| value == 150)
             }));
 
         assert!((150u32)
             .encode(&mut buffer.iter_mut())
             .is_ok_and(|num_bytes_encode| {
-                u32::decode(&mut buffer[0..num_bytes_encode].iter())
-                    .is_ok_and(|value| value == 150)
+                u32::decode(&mut buffer[0..num_bytes_encode].iter()).is_ok_and(|value| value == 150)
+            }));
+
+        assert!((150u32)
+            .encode(&mut buffer.iter_mut())
+            .is_ok_and(|num_bytes_encode| {
+                u32::decode(&mut buffer[0..num_bytes_encode].iter()).is_ok_and(|value| value == 150)
             }));
 
         assert!((150u64)
             .encode(&mut buffer.iter_mut())
             .is_ok_and(|num_bytes_encode| {
-                u64::decode(&mut buffer[0..num_bytes_encode].iter())
-                    .is_ok_and(|value| value == 150)
+                u64::decode(&mut buffer[0..num_bytes_encode].iter()).is_ok_and(|value| value == 150)
             }));
     }
 
@@ -278,14 +258,14 @@ mod tests {
         assert!((u64::MAX)
             .encode(&mut buffer.iter_mut())
             .is_ok_and(|num_bytes_encode| {
-                u8::decode(&mut buffer[0..num_bytes_encode].iter())
+                u32::decode(&mut buffer[0..num_bytes_encode].iter())
                     .is_err_and(|err| err == ProtoscopeRsError::DecodeOverflow)
             }));
 
         assert!((u64::MAX)
             .encode(&mut buffer.iter_mut())
             .is_ok_and(|num_bytes_encode| {
-                u16::decode(&mut buffer[0..num_bytes_encode].iter())
+                u32::decode(&mut buffer[0..num_bytes_encode].iter())
                     .is_err_and(|err| err == ProtoscopeRsError::DecodeOverflow)
             }));
     }
@@ -311,7 +291,7 @@ mod tests {
 
         for input in (i64::MAX - 100)..=(i64::MAX) {
             assert!(input
-                .encode( &mut buffer.iter_mut())
+                .encode(&mut buffer.iter_mut())
                 .is_ok_and(|num_bytes_encoded| {
                     i64::decode(&mut buffer[0..num_bytes_encoded].iter())
                         .is_ok_and(|output| output == input)
@@ -322,10 +302,10 @@ mod tests {
     #[test]
     fn test_signed_encode_decode_overflow() {
         let mut buffer: Vec<u8> = vec![0; 10];
-        assert!((i16::MIN)
+        assert!((i64::MIN)
             .encode(&mut buffer.iter_mut())
             .is_ok_and(|num_bytes_encode| {
-                i8::decode(&mut buffer[0..num_bytes_encode].iter())
+                i32::decode(&mut buffer[0..num_bytes_encode].iter())
                     .is_err_and(|err| err == ProtoscopeRsError::DecodeOverflow)
             }));
     }
@@ -333,20 +313,30 @@ mod tests {
     #[test]
     fn test_encode_decode_bool() {
         let mut buffer: Vec<u8> = vec![0; 10];
-        assert!(true.encode(&mut buffer.iter_mut()).is_ok_and(|num_bytes_encoded|{
-            bool::decode(&mut buffer[0..num_bytes_encoded].iter()).is_ok_and(|value|value)
-        }));
+        assert!(true
+            .encode(&mut buffer.iter_mut())
+            .is_ok_and(|num_bytes_encoded| {
+                bool::decode(&mut buffer[0..num_bytes_encoded].iter()).is_ok_and(|value| value)
+            }));
 
-        assert!(false.encode(&mut buffer.iter_mut()).is_ok_and(|num_bytes_encoded|{
-            bool::decode(&mut buffer[0..num_bytes_encoded].iter()).is_ok_and(|value|value)
-        }) == false);
+        assert!(
+            false
+                .encode(&mut buffer.iter_mut())
+                .is_ok_and(|num_bytes_encoded| {
+                    bool::decode(&mut buffer[0..num_bytes_encoded].iter()).is_ok_and(|value| value)
+                })
+                == false
+        );
     }
 
     #[test]
     fn test_encode_decode_bool_overflow() {
         let mut buffer: Vec<u8> = vec![0; 10];
-        assert!(2i32.encode(&mut buffer.iter_mut()).is_ok_and(|num_bytes_encoded|{
-            bool::decode(&mut buffer[0..num_bytes_encoded].iter()).is_err_and(|err|err == ProtoscopeRsError::DecodeOverflow)
-        }));
+        assert!(2i32
+            .encode(&mut buffer.iter_mut())
+            .is_ok_and(|num_bytes_encoded| {
+                bool::decode(&mut buffer[0..num_bytes_encoded].iter())
+                    .is_err_and(|err| err == ProtoscopeRsError::DecodeOverflow)
+            }));
     }
 }

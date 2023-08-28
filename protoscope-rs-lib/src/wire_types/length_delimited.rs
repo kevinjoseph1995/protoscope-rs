@@ -1,42 +1,47 @@
-use crate::wire_types::varint::{DecodeVarint, EncodeVarint};
+use crate::wire_types::{Decode, Encode};
 use crate::{ByteIterator, OutputByteIterator, ProtoscopeRsError, Result};
 
-pub trait EncodeLengthDelimited<'a> {
-    fn encode(&'a self, iter: &mut OutputByteIterator) -> Result<usize> {
-        let mut total_number_of_bytes_encoded = 0;
-        let length = self.get_length()?;
-        total_number_of_bytes_encoded += length.encode(iter)?;
-        let mut payload_iterator = self.get_payload_iterator();
-        for _ in 0..length {
-            let payload_byte = match payload_iterator.next() {
-                Some(byte) => byte.clone(),
-                None => return Err(ProtoscopeRsError::LengthMismatch),
-            };
-            let output_byte = match iter.next() {
-                Some(byte) => byte,
-                None => return Err(ProtoscopeRsError::BufferFull),
-            };
-            *output_byte = payload_byte;
-        }
-        total_number_of_bytes_encoded += length as usize;
-        Ok(total_number_of_bytes_encoded)
+fn encode_internal<'a, T: EncodeLengthDelimited<'a>>(
+    value: &'a T,
+    iter: &mut OutputByteIterator,
+) -> Result<usize> {
+    let mut total_number_of_bytes_encoded = 0;
+    let length = value.get_length()?;
+    total_number_of_bytes_encoded += length.encode(iter)?;
+    let mut payload_iterator = value.get_payload_iterator();
+    for _ in 0..length {
+        let payload_byte = match payload_iterator.next() {
+            Some(byte) => byte.clone(),
+            None => return Err(ProtoscopeRsError::LengthMismatch),
+        };
+        let output_byte = match iter.next() {
+            Some(byte) => byte,
+            None => return Err(ProtoscopeRsError::BufferFull),
+        };
+        *output_byte = payload_byte;
     }
+    total_number_of_bytes_encoded += length as usize;
+    Ok(total_number_of_bytes_encoded)
+}
+
+trait EncodeLengthDelimited<'a>: Encode<'a> {
     fn get_length(&self) -> Result<i32>;
     fn get_payload_iterator(&'a self) -> ByteIterator<'a>;
 }
 
-pub trait DecodeLengthDelimited: Sized {
-    fn decode(iter: &mut ByteIterator) -> Result<Self> {
-        let length = i32::decode(iter)?;
-        let output_buffer: Vec<u8> = iter
-            .map(|byte| byte.clone())
-            .take(length as usize)
-            .collect();
-        if output_buffer.len() != length as usize {
-            return Err(ProtoscopeRsError::LengthMismatch);
-        }
-        Self::from_raw_buffer(output_buffer)
+fn decode_internal<T: DecodeLengthDelimited>(iter: &mut ByteIterator) -> Result<T> {
+    let length = i32::decode(iter)?;
+    let output_buffer: Vec<u8> = iter
+        .map(|byte| byte.clone())
+        .take(length as usize)
+        .collect();
+    if output_buffer.len() != length as usize {
+        return Err(ProtoscopeRsError::LengthMismatch);
     }
+    T::from_raw_buffer(output_buffer)
+}
+
+trait DecodeLengthDelimited: Decode {
     fn from_raw_buffer(buffer: Vec<u8>) -> Result<Self>;
 }
 
@@ -44,11 +49,22 @@ impl<'a> EncodeLengthDelimited<'a> for String {
     fn get_length(&self) -> Result<i32> {
         Ok(self.len() as i32)
     }
-
     fn get_payload_iterator(&'a self) -> ByteIterator<'a> {
         let bytes: &'a [u8] = self.as_bytes();
         let iter: ByteIterator<'a> = bytes.iter();
         iter
+    }
+}
+
+impl<'a> Encode<'a> for String {
+    fn encode(&'a self, iter: &mut OutputByteIterator) -> Result<usize> {
+        encode_internal(self, iter)
+    }
+}
+
+impl Decode for String {
+    fn decode(iter: &mut ByteIterator) -> Result<Self> {
+        decode_internal(iter)
     }
 }
 
