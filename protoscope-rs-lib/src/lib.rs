@@ -6,6 +6,7 @@ pub mod wire_types;
 pub enum ProtoscopeRsError {
     VarintOverflow,
     DecodeOverflow,
+    EncodeOverflow,
     BufferFull,
     LengthMismatch,
     UtfDecoding,
@@ -22,6 +23,7 @@ impl Display for ProtoscopeRsError {
             ProtoscopeRsError::LengthMismatch => write!(f, "ProtoscopeRsError::LengthMismatch"),
             ProtoscopeRsError::UtfDecoding => write!(f, "ProtoscopeRsError::UtfDecoding"),
             ProtoscopeRsError::InvalidWireType => write!(f, "ProtoscopeRsError::InvalidWireType"),
+            ProtoscopeRsError::EncodeOverflow => write!(f, "ProtoscopeRsError::EncodeOverflow"),
             ProtoscopeRsError::Eof => write!(f, "ProtoscopeRsError::Eof"),
         }
     }

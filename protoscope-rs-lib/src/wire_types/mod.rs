@@ -52,6 +52,7 @@ mod private {
     impl Sealed for f32 {}
     impl Sealed for f64 {}
     impl Sealed for String {}
+    impl Sealed for Vec<u8> {}
 }
 
 pub trait Encode<'a>: Sized + private::Sealed {
@@ -77,6 +78,7 @@ pub fn decode_tag(iter: &mut crate::ByteIterator) -> crate::Result<Tag> {
     })
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
 
