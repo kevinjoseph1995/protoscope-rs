@@ -1,6 +1,6 @@
 [workspace]
 
 members = [
-    "protoscope-rs-bin",
-    "protoscope-rs-lib",
+    "rs-protoc",
+    "encoding",
 ]

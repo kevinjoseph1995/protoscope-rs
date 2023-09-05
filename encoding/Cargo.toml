@@ -1,9 +1,10 @@
 [package]
-name = "protoscope-rs-bin"
+name = "encoding"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-protoscope-rs-lib = { path = "../protoscope-rs-lib" }
+num-traits = "0.2.16"
+unroll = "0.1.5"
