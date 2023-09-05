@@ -1,3 +1,5 @@
+use std::str::Chars;
+
 use crate::error::Result;
 use crate::source_text::SourceBuffer;
 
@@ -66,6 +68,7 @@ pub enum TokenKind {
     Bytes,
     Group,
     Returns,
+    Error, /* Not a valid token that can be consumed by the parser */
 }
 
 struct TokenInfo {
@@ -73,7 +76,7 @@ struct TokenInfo {
     token_kind: TokenKind,
     /// Line on which the Token starts.
     token_line: u32,
-    /// Zero-based byte offset of the token within its line.
+    /// Zero-based character offset of the token within its line.
     token_column_offset: u32,
 }
 
@@ -96,7 +99,7 @@ impl<'a> Iterator for TokenIterator {
 }
 
 struct TokenizedBuffer<'a> {
-    source_text: &'a SourceBuffer,
+    source_buffer: &'a SourceBuffer,
     token_info_vec: Vec<TokenInfo>,
     string_literal_storage: Vec<String>,
     integer_literal_storage: Vec<u64>,
@@ -104,31 +107,53 @@ struct TokenizedBuffer<'a> {
     identifier_reference_storage: Vec<&'a str>,
 }
 
-impl<'a> TokenizedBuffer<'a> {
-    pub fn new(source_text: &'a SourceBuffer) -> TokenizedBuffer<'a> {
-        todo!()
-    }
+type SliceView<'a> = &'a str;
 
-    pub fn size(&self) -> usize {
-        self.token_info_vec.len()
+fn is_whitespace(ch: char) -> bool {
+    // https://protobuf.com/docs/language-spec#whitespace-and-comments
+    match ch {
+        ' ' => true,
+        '\n' => true,
+        '\r' => true,
+        '\t' => true,
+        '\x0c' => true, // Form-feed
+        '\x0b' => true, // Vertical-tab
+        _ => false,
     }
+}
 
-    pub fn get_token_iterator(&self) -> TokenIterator {
-        TokenIterator {
-            index: 0,
-            length: self.size() as i32,
+fn skip_whitespace(source_text: &mut SliceView) -> bool {
+    let mut chars = source_text.chars();
+    if let Some(ch) = chars.next() {
+        if is_whitespace(ch) {
+            *source_text = chars.as_str();
+            return true;
         }
     }
+    false
+}
 
-    pub fn get_token_kind(&self, token: &Token) -> TokenKind {
-        self.token_info_vec[token.index as usize].token_kind
+impl<'a> TokenizedBuffer<'a> {
+    pub fn new(source_buffer: &'a SourceBuffer) -> TokenizedBuffer<'a> {
+        let mut tokenized_buffer = TokenizedBuffer {
+            source_buffer,
+            token_info_vec: vec![],
+            string_literal_storage: vec![],
+            integer_literal_storage: vec![],
+            float_literal_storage: vec![],
+            identifier_reference_storage: vec![],
+        };
+        tokenized_buffer.lex(&mut source_buffer.text());
+        tokenized_buffer
+    }
+    fn lex(&mut self, source_text: &mut SliceView) {
+        while !skip_whitespace(source_text) {
+            todo!()
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test() {}
 }

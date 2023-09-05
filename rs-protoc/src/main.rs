@@ -1,4 +1,3 @@
-mod cursor;
 mod error;
 mod lexer;
 mod source_text;
