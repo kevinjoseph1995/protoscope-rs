@@ -68,6 +68,7 @@ pub enum TokenKind {
     Bytes,
     Group,
     Returns,
+    Eof,
     Error, /* Not a valid token that can be consumed by the parser */
 }
 
@@ -105,9 +106,17 @@ struct TokenizedBuffer<'a> {
     integer_literal_storage: Vec<u64>,
     float_literal_storage: Vec<f64>,
     identifier_reference_storage: Vec<&'a str>,
+    current_line: u32,
 }
 
 type SliceView<'a> = &'a str;
+
+fn drop_first(source_text: &mut SliceView, number_of_characters_to_drop: usize) {
+    if source_text.len() >= number_of_characters_to_drop {
+        let original_slice = *source_text;
+        *source_text = &original_slice[number_of_characters_to_drop..];
+    }
+}
 
 fn is_whitespace(ch: char) -> bool {
     // https://protobuf.com/docs/language-spec#whitespace-and-comments
@@ -122,17 +131,6 @@ fn is_whitespace(ch: char) -> bool {
     }
 }
 
-fn skip_whitespace(source_text: &mut SliceView) -> bool {
-    let mut chars = source_text.chars();
-    if let Some(ch) = chars.next() {
-        if is_whitespace(ch) {
-            *source_text = chars.as_str();
-            return true;
-        }
-    }
-    false
-}
-
 impl<'a> TokenizedBuffer<'a> {
     pub fn new(source_buffer: &'a SourceBuffer) -> TokenizedBuffer<'a> {
         let mut tokenized_buffer = TokenizedBuffer {
@@ -142,13 +140,84 @@ impl<'a> TokenizedBuffer<'a> {
             integer_literal_storage: vec![],
             float_literal_storage: vec![],
             identifier_reference_storage: vec![],
+            current_line: 1,
         };
         tokenized_buffer.lex(&mut source_buffer.text());
         tokenized_buffer
     }
+    fn consume_single_line_comment(&mut self, source_text: &mut SliceView) {
+        debug_assert!(source_text.starts_with("//"));
+        drop_first(source_text, 2);
+        let mut remaining_chars = source_text.chars();
+        while let Some(ch) = remaining_chars.next() {
+            if ch == '\n' {
+                self.current_line += 1;
+                *source_text = remaining_chars.as_str();
+                return;
+            }
+            if ch == '\x00' {
+                *source_text = remaining_chars.as_str();
+                return;
+            }
+        }
+        *source_text = "";
+    }
+
+    fn consume_block_comment(&mut self, source_text: &mut SliceView) {
+        debug_assert!(source_text.starts_with("/*"));
+        drop_first(source_text, 2);
+        let mut remaining_chars = source_text.chars();
+        while let Some(ch) = remaining_chars.next() {
+            if ch == '*' {
+                if let Some(second_ch) = remaining_chars.next() {
+                    if second_ch == '/' {
+                        *source_text = remaining_chars.as_str();
+                        return;
+                    }
+                }
+            } else if ch == '\n' {
+                self.current_line += 1;
+            }
+        }
+        *source_text = "";
+    }
+
+    fn consume_whitespace(&mut self, source_text: &mut SliceView) {
+        let mut chars = source_text.chars();
+        while let Some(ch) = chars.next() {
+            if ch == '\n' {
+                self.current_line += 1;
+            }
+            if !is_whitespace(ch) {
+                break;
+            }
+        }
+    }
+
+    /// https://protobuf.com/docs/language-spec#whitespace-and-comments
+    fn skip_whitespace_and_comments(&mut self, source_text: &mut SliceView) {
+        while !source_text.is_empty() {
+            if source_text.starts_with("//") {
+                self.consume_single_line_comment(source_text);
+            } else if source_text.starts_with("/*") {
+                self.consume_block_comment(source_text)
+            } else if is_whitespace(source_text.chars().nth(0).unwrap()) {
+                self.consume_whitespace(source_text)
+            } else {
+                break;
+            }
+        }
+    }
     fn lex(&mut self, source_text: &mut SliceView) {
-        while !skip_whitespace(source_text) {
-            todo!()
+        loop {
+            if (source_text.is_empty()) {
+                self.token_info_vec.push(TokenInfo {
+                    token_kind: TokenKind::Eof,
+                    token_line: todo!(),
+                    token_column_offset: todo!(),
+                })
+            }
+            self.skip_whitespace_and_comments(source_text);
         }
     }
 }
