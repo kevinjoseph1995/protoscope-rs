@@ -1,18 +1,13 @@
-use std::str::Chars;
+use std::str::CharIndices;
 
-use crate::error::Result;
 use crate::source_text::SourceBuffer;
 
-pub struct Token {
-    index: i32,
-}
-
 #[derive(Clone, Copy)]
-pub enum TokenKind {
-    Identifier,
-    IntegerLiteral,
-    FloatLiteral,
-    StringLiteral,
+pub enum TokenKind<'storage> {
+    Identifier(&'storage str),
+    IntegerLiteral(&'storage str),
+    FloatLiteral(&'storage str),
+    StringLiteral(&'storage str),
     Semicolon,
     Colon,
     LParen,
@@ -72,49 +67,306 @@ pub enum TokenKind {
     Error, /* Not a valid token that can be consumed by the parser */
 }
 
-struct TokenInfo {
-    /// The kind of token
-    token_kind: TokenKind,
-    /// Line on which the Token starts.
-    token_line: u32,
-    /// Zero-based character offset of the token within its line.
-    token_column_offset: u32,
+pub struct Token<'storage> {
+    kind: TokenKind<'storage>,
+    line_number: usize,  // 1 based line number
+    column_index: usize, // 1 based column index
+    character_index: usize,
 }
 
-pub struct TokenIterator {
-    index: i32,
-    length: i32,
+struct Cursor<'source> {
+    source_text: &'source str,
+    iter: CharIndices<'source>,
 }
 
-impl<'a> Iterator for TokenIterator {
-    type Item = Token;
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.index < self.length {
-            let index = self.index;
-            self.index += 1;
-            Some(Token { index })
-        } else {
-            None
+impl<'source> Cursor<'source> {
+    fn new(source_text: &'source str) -> Self {
+        Self {
+            source_text: source_text,
+            iter: source_text.char_indices(),
+        }
+    }
+
+    fn next(&mut self) -> Option<char> {
+        match self.iter.next() {
+            Some((_, ch)) => Some(ch),
+            None => None,
+        }
+    }
+
+    fn next_with_index(&mut self) -> Option<(usize, char)> {
+        self.iter.next()
+    }
+
+    fn is_eof(&self) -> bool {
+        self.peek().is_none()
+    }
+
+    fn peek(&self) -> Option<char> {
+        match self.iter.clone().next() {
+            Some((_, ch)) => Some(ch),
+            None => None,
+        }
+    }
+
+    fn peek_with_index(&self) -> Option<(usize, char)> {
+        self.iter.clone().next()
+    }
+
+    fn peek_index(&self) -> Option<usize> {
+        match self.iter.clone().next() {
+            Some((index, _)) => Some(index),
+            None => None,
         }
     }
 }
 
-struct TokenizedBuffer<'a> {
-    source_buffer: &'a SourceBuffer,
-    token_info_vec: Vec<TokenInfo>,
-    string_literal_storage: Vec<String>,
-    integer_literal_storage: Vec<u64>,
-    float_literal_storage: Vec<f64>,
-    identifier_reference_storage: Vec<&'a str>,
-    current_line: u32,
+struct Lexer<'storage> {
+    cursor: Cursor<'storage>,
+    current_line_column: usize,
+    current_line_number: usize,
 }
 
-type SliceView<'a> = &'a str;
+impl<'storage> Lexer<'storage> {
+    fn new(source_text: &'storage str) -> Self {
+        Lexer {
+            cursor: Cursor::new(source_text),
+            current_line_column: 0,
+            current_line_number: 0,
+        }
+    }
 
-fn drop_first(source_text: &mut SliceView, number_of_characters_to_drop: usize) {
-    if source_text.len() >= number_of_characters_to_drop {
-        let original_slice = *source_text;
-        *source_text = &original_slice[number_of_characters_to_drop..];
+    fn identifier_or_keyword(&mut self) -> Option<Token<'storage>> {
+        todo!()
+    }
+
+    fn numeric_literal(&mut self) -> Option<Token<'storage>> {
+        todo!()
+    }
+
+    fn string_literal(&mut self) -> Option<Token<'storage>> {
+        todo!()
+    }
+
+    fn next_token(&mut self) -> Option<Token<'storage>> {
+        if let Some(ch) = self.cursor.peek() {
+            if is_whitespace(ch) {
+                self.consume_whitespace();
+            }
+        }
+        while let Some((index, ch)) = self.next_char_with_index() {
+            match ch {
+                ';' => {
+                    return Some(Token {
+                        kind: TokenKind::Semicolon,
+                        line_number: self.current_line_number,
+                        column_index: self.current_line_column,
+                        character_index: index,
+                    })
+                }
+                ':' => {
+                    return Some(Token {
+                        kind: TokenKind::Colon,
+                        line_number: self.current_line_number,
+                        column_index: self.current_line_column,
+                        character_index: index,
+                    })
+                }
+                '(' => {
+                    return Some(Token {
+                        kind: TokenKind::LParen,
+                        line_number: self.current_line_number,
+                        column_index: self.current_line_column,
+                        character_index: index,
+                    })
+                }
+                '[' => {
+                    return Some(Token {
+                        kind: TokenKind::LBracket,
+                        line_number: self.current_line_number,
+                        column_index: self.current_line_column,
+                        character_index: index,
+                    })
+                }
+                ',' => {
+                    return Some(Token {
+                        kind: TokenKind::Comma,
+                        line_number: self.current_line_number,
+                        column_index: self.current_line_column,
+                        character_index: index,
+                    })
+                }
+                '=' => {
+                    return Some(Token {
+                        kind: TokenKind::Equals,
+                        line_number: self.current_line_number,
+                        column_index: self.current_line_column,
+                        character_index: index,
+                    })
+                }
+                ')' => {
+                    return Some(Token {
+                        kind: TokenKind::RParen,
+                        line_number: self.current_line_number,
+                        column_index: self.current_line_column,
+                        character_index: index,
+                    })
+                }
+                ']' => {
+                    return Some(Token {
+                        kind: TokenKind::RBracket,
+                        line_number: self.current_line_number,
+                        column_index: self.current_line_column,
+                        character_index: index,
+                    })
+                }
+                '.' => {
+                    if let Some(ch) = self.cursor.peek() {
+                        if ch.is_numeric() {
+                            return self.numeric_literal();
+                        }
+                    }
+                    return Some(Token {
+                        kind: TokenKind::Dot,
+                        line_number: self.current_line_number,
+                        column_index: self.current_line_column,
+                        character_index: index,
+                    });
+                }
+                '-' => {
+                    return Some(Token {
+                        kind: TokenKind::Minus,
+                        line_number: self.current_line_number,
+                        column_index: self.current_line_column,
+                        character_index: index,
+                    })
+                }
+                '{' => {
+                    return Some(Token {
+                        kind: TokenKind::LBrace,
+                        line_number: self.current_line_number,
+                        column_index: self.current_line_column,
+                        character_index: index,
+                    })
+                }
+                '<' => {
+                    return Some(Token {
+                        kind: TokenKind::LAngle,
+                        line_number: self.current_line_number,
+                        column_index: self.current_line_column,
+                        character_index: index,
+                    })
+                }
+                '/' => {
+                    if let Some(ch) = self.cursor.peek() {
+                        if ch == '/' {
+                            self.consume_single_line_comment();
+                            continue;
+                        } else if ch == '*' {
+                            self.consume_block_comment();
+                            continue;
+                        }
+                    }
+                    return Some(Token {
+                        kind: TokenKind::Slash,
+                        line_number: self.current_line_number,
+                        column_index: self.current_line_column,
+                        character_index: index,
+                    });
+                }
+                '+' => {
+                    return Some(Token {
+                        kind: TokenKind::Plus,
+                        line_number: self.current_line_number,
+                        column_index: self.current_line_column,
+                        character_index: index,
+                    })
+                }
+                '}' => {
+                    return Some(Token {
+                        kind: TokenKind::RBrace,
+                        line_number: self.current_line_number,
+                        column_index: self.current_line_column,
+                        character_index: index,
+                    })
+                }
+                '>' => {
+                    return Some(Token {
+                        kind: TokenKind::RAngle,
+                        line_number: self.current_line_number,
+                        column_index: self.current_line_column,
+                        character_index: index,
+                    })
+                }
+                '\'' | '"' => return self.string_literal(),
+                '0'..='9' => return self.numeric_literal(),
+                'a'..='z' | 'A'..='Z' | '_' => return self.identifier_or_keyword(),
+                _ => todo!(),
+            }
+        }
+        None
+    }
+
+    /// https://protobuf.com/docs/language-spec#whitespace-and-comments
+    fn consume_whitespace(&mut self) {
+        debug_assert!(self.cursor.peek().is_some());
+        debug_assert!(is_whitespace(self.cursor.peek().unwrap()));
+        while let Some((_, ch)) = self.next_char_with_index() {
+            if !is_whitespace(ch) {
+                // First non-whitespace character
+                return;
+            }
+        }
+    }
+
+    fn next_char_with_index(&mut self) -> Option<(usize, char)> {
+        match self.cursor.next_with_index() {
+            Some((index, ch)) => {
+                if ch == '\n' {
+                    self.current_line_number += 1;
+                    self.current_line_column = 1;
+                } else if ch == '\t' {
+                    self.current_line_column += 4;
+                } else {
+                    self.current_line_column += 1;
+                }
+                return Some((index, ch));
+            }
+            None => return None,
+        }
+    }
+
+    /// https://protobuf.com/docs/language-spec#whitespace-and-comments
+    fn consume_single_line_comment(&mut self) {
+        debug_assert!(self.cursor.peek().is_some());
+        debug_assert!(self.cursor.peek().unwrap() == '/');
+        while let Some((_, ch)) = self.next_char_with_index() {
+            if ch == '\n' || ch == '\x00' {
+                break;
+            }
+        }
+    }
+    /// https://protobuf.com/docs/language-spec#whitespace-and-comments
+    fn consume_block_comment(&mut self) {
+        debug_assert!(self.cursor.peek().is_some());
+        debug_assert!(self.cursor.peek().unwrap() == '*');
+        while let Some((_, ch)) = self.next_char_with_index() {
+            if ch == '*' {
+                if let Some((_, next_ch)) = self.next_char_with_index() {
+                    if next_ch == '/' {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl<'storage> Iterator for Lexer<'storage> {
+    type Item = Token<'storage>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next_token()
     }
 }
 
@@ -131,96 +383,96 @@ fn is_whitespace(ch: char) -> bool {
     }
 }
 
-impl<'a> TokenizedBuffer<'a> {
-    pub fn new(source_buffer: &'a SourceBuffer) -> TokenizedBuffer<'a> {
-        let mut tokenized_buffer = TokenizedBuffer {
-            source_buffer,
-            token_info_vec: vec![],
-            string_literal_storage: vec![],
-            integer_literal_storage: vec![],
-            float_literal_storage: vec![],
-            identifier_reference_storage: vec![],
-            current_line: 1,
-        };
-        tokenized_buffer.lex(&mut source_buffer.text());
-        tokenized_buffer
-    }
-    fn consume_single_line_comment(&mut self, source_text: &mut SliceView) {
-        debug_assert!(source_text.starts_with("//"));
-        drop_first(source_text, 2);
-        let mut remaining_chars = source_text.chars();
-        while let Some(ch) = remaining_chars.next() {
-            if ch == '\n' {
-                self.current_line += 1;
-                *source_text = remaining_chars.as_str();
-                return;
-            }
-            if ch == '\x00' {
-                *source_text = remaining_chars.as_str();
-                return;
-            }
-        }
-        *source_text = "";
-    }
+// impl<'a> TokenizedBuffer<'a> {
+//     pub fn new(source_buffer: &'a SourceBuffer) -> TokenizedBuffer<'a> {
+//         let mut tokenized_buffer = TokenizedBuffer {
+//             source_buffer,
+//             token_info_vec: vec![],
+//             string_literal_storage: vec![],
+//             integer_literal_storage: vec![],
+//             float_literal_storage: vec![],
+//             identifier_reference_storage: vec![],
+//             current_line: 1,
+//         };
+//         tokenized_buffer.lex(&mut source_buffer.text());
+//         tokenized_buffer
+//     }
+//     fn consume_single_line_comment(&mut self, source_text: &mut SliceView) {
+//         debug_assert!(source_text.starts_with("//"));
+//         drop_first(source_text, 2);
+//         let mut remaining_chars = source_text.chars();
+//         while let Some(ch) = remaining_chars.next() {
+//             if ch == '\n' {
+//                 self.current_line += 1;
+//                 *source_text = remaining_chars.as_str();
+//                 return;
+//             }
+//             if ch == '\x00' {
+//                 *source_text = remaining_chars.as_str();
+//                 return;
+//             }
+//         }
+//         *source_text = "";
+//     }
 
-    fn consume_block_comment(&mut self, source_text: &mut SliceView) {
-        debug_assert!(source_text.starts_with("/*"));
-        drop_first(source_text, 2);
-        let mut remaining_chars = source_text.chars();
-        while let Some(ch) = remaining_chars.next() {
-            if ch == '*' {
-                if let Some(second_ch) = remaining_chars.next() {
-                    if second_ch == '/' {
-                        *source_text = remaining_chars.as_str();
-                        return;
-                    }
-                }
-            } else if ch == '\n' {
-                self.current_line += 1;
-            }
-        }
-        *source_text = "";
-    }
+//     fn consume_block_comment(&mut self, source_text: &mut SliceView) {
+//         debug_assert!(source_text.starts_with("/*"));
+//         drop_first(source_text, 2);
+//         let mut remaining_chars = source_text.chars();
+//         while let Some(ch) = remaining_chars.next() {
+//             if ch == '*' {
+//                 if let Some(second_ch) = remaining_chars.next() {
+//                     if second_ch == '/' {
+//                         *source_text = remaining_chars.as_str();
+//                         return;
+//                     }
+//                 }
+//             } else if ch == '\n' {
+//                 self.current_line += 1;
+//             }
+//         }
+//         *source_text = "";
+//     }
 
-    fn consume_whitespace(&mut self, source_text: &mut SliceView) {
-        let mut chars = source_text.chars();
-        while let Some(ch) = chars.next() {
-            if ch == '\n' {
-                self.current_line += 1;
-            }
-            if !is_whitespace(ch) {
-                break;
-            }
-        }
-    }
+//     fn consume_whitespace(&mut self, source_text: &mut SliceView) {
+//         let mut chars = source_text.chars();
+//         while let Some(ch) = chars.next() {
+//             if ch == '\n' {
+//                 self.current_line += 1;
+//             }
+//             if !is_whitespace(ch) {
+//                 break;
+//             }
+//         }
+//     }
 
-    /// https://protobuf.com/docs/language-spec#whitespace-and-comments
-    fn skip_whitespace_and_comments(&mut self, source_text: &mut SliceView) {
-        while !source_text.is_empty() {
-            if source_text.starts_with("//") {
-                self.consume_single_line_comment(source_text);
-            } else if source_text.starts_with("/*") {
-                self.consume_block_comment(source_text)
-            } else if is_whitespace(source_text.chars().nth(0).unwrap()) {
-                self.consume_whitespace(source_text)
-            } else {
-                break;
-            }
-        }
-    }
-    fn lex(&mut self, source_text: &mut SliceView) {
-        loop {
-            if (source_text.is_empty()) {
-                self.token_info_vec.push(TokenInfo {
-                    token_kind: TokenKind::Eof,
-                    token_line: todo!(),
-                    token_column_offset: todo!(),
-                })
-            }
-            self.skip_whitespace_and_comments(source_text);
-        }
-    }
-}
+//     /// https://protobuf.com/docs/language-spec#whitespace-and-comments
+//     fn skip_whitespace_and_comments(&mut self, source_text: &mut SliceView) {
+//         while !source_text.is_empty() {
+//             if source_text.starts_with("//") {
+//                 self.consume_single_line_comment(source_text);
+//             } else if source_text.starts_with("/*") {
+//                 self.consume_block_comment(source_text)
+//             } else if is_whitespace(source_text.chars().nth(0).unwrap()) {
+//                 self.consume_whitespace(source_text)
+//             } else {
+//                 break;
+//             }
+//         }
+//     }
+//     fn lex(&mut self, source_text: &mut SliceView) {
+//         loop {
+//             if (source_text.is_empty()) {
+//                 self.token_info_vec.push(TokenInfo {
+//                     token_kind: TokenKind::Eof,
+//                     token_line: todo!(),
+//                     token_column_offset: todo!(),
+//                 })
+//             }
+//             self.skip_whitespace_and_comments(source_text);
+//         }
+//     }
+// }
 
 #[cfg(test)]
 mod tests {
