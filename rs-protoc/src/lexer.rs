@@ -63,8 +63,7 @@ pub enum TokenKind<'storage> {
     Bytes,
     Group,
     Returns,
-    Eof,
-    Error, /* Not a valid token that can be consumed by the parser */
+    Error(&'storage str), /* Not a valid token that can be consumed by the parser */
 }
 
 pub struct Token<'storage> {
@@ -109,6 +108,17 @@ impl<'source> Cursor<'source> {
         }
     }
 
+    fn peek_next(&self) -> Option<char> {
+        let mut iter = self.iter.clone();
+        match iter.next() {
+            Some(_) => match iter.next() {
+                Some((_, ch)) => Some(ch),
+                None => None,
+            },
+            None => None,
+        }
+    }
+
     fn peek_with_index(&self) -> Option<(usize, char)> {
         self.iter.clone().next()
     }
@@ -122,6 +132,7 @@ impl<'source> Cursor<'source> {
 }
 
 struct Lexer<'storage> {
+    source_text: &'storage str,
     cursor: Cursor<'storage>,
     current_line_column: usize,
     current_line_number: usize,
@@ -130,6 +141,7 @@ struct Lexer<'storage> {
 impl<'storage> Lexer<'storage> {
     fn new(source_text: &'storage str) -> Self {
         Lexer {
+            source_text,
             cursor: Cursor::new(source_text),
             current_line_column: 0,
             current_line_number: 0,
@@ -149,11 +161,7 @@ impl<'storage> Lexer<'storage> {
     }
 
     fn next_token(&mut self) -> Option<Token<'storage>> {
-        if let Some(ch) = self.cursor.peek() {
-            if is_whitespace(ch) {
-                self.consume_whitespace();
-            }
-        }
+        self.consume_whitespace_and_comments();
         while let Some((index, ch)) = self.next_char_with_index() {
             match ch {
                 ';' => {
@@ -258,15 +266,6 @@ impl<'storage> Lexer<'storage> {
                     })
                 }
                 '/' => {
-                    if let Some(ch) = self.cursor.peek() {
-                        if ch == '/' {
-                            self.consume_single_line_comment();
-                            continue;
-                        } else if ch == '*' {
-                            self.consume_block_comment();
-                            continue;
-                        }
-                    }
                     return Some(Token {
                         kind: TokenKind::Slash,
                         line_number: self.current_line_number,
@@ -301,21 +300,62 @@ impl<'storage> Lexer<'storage> {
                 '\'' | '"' => return self.string_literal(),
                 '0'..='9' => return self.numeric_literal(),
                 'a'..='z' | 'A'..='Z' | '_' => return self.identifier_or_keyword(),
-                _ => todo!(),
+                _ => {
+                    return Some(Token {
+                        kind: TokenKind::Error(&self.source_text[index..index + 1]),
+                        line_number: self.current_line_number,
+                        column_index: self.current_line_column,
+                        character_index: index,
+                    })
+                }
             }
         }
         None
     }
 
     /// https://protobuf.com/docs/language-spec#whitespace-and-comments
-    fn consume_whitespace(&mut self) {
-        debug_assert!(self.cursor.peek().is_some());
-        debug_assert!(is_whitespace(self.cursor.peek().unwrap()));
-        while let Some((_, ch)) = self.next_char_with_index() {
-            if !is_whitespace(ch) {
-                // First non-whitespace character
-                return;
+    fn consume_whitespace_and_comments(&mut self) {
+        let is_start_of_single_line_comment = |cursor: &mut Cursor| -> bool {
+            if let Some(char_0) = cursor.peek() {
+                if char_0 == '/' {
+                    if let Some(char_1) = cursor.peek_next() {
+                        if char_1 == '/' {
+                            return true;
+                        }
+                    }
+                }
             }
+            false
+        };
+        let is_start_of_block_comment = |cursor: &mut Cursor| -> bool {
+            if let Some(char_0) = cursor.peek() {
+                if char_0 == '/' {
+                    if let Some(char_1) = cursor.peek_next() {
+                        if char_1 == '*' {
+                            return true;
+                        }
+                    }
+                }
+            }
+            false
+        };
+        loop {
+            if is_start_of_block_comment(&mut self.cursor) {
+                self.consume_block_comment();
+                continue;
+            }
+            if is_start_of_single_line_comment(&mut self.cursor) {
+                self.consume_single_line_comment();
+                continue;
+            }
+            if let Some(ch) = self.cursor.peek() {
+                if is_whitespace(ch) {
+                    _ = self.next_char_with_index(); // Consume the whitespace and move ahead
+                    continue;
+                }
+            }
+            // At the first non-whitespace/non-comment character
+            break;
         }
     }
 
@@ -340,6 +380,10 @@ impl<'storage> Lexer<'storage> {
     fn consume_single_line_comment(&mut self) {
         debug_assert!(self.cursor.peek().is_some());
         debug_assert!(self.cursor.peek().unwrap() == '/');
+        _ = self.next_char_with_index(); // Consume the "/"
+        debug_assert!(self.cursor.peek().is_some());
+        debug_assert!(self.cursor.peek().unwrap() == '/');
+        _ = self.next_char_with_index(); // Consume the "/"
         while let Some((_, ch)) = self.next_char_with_index() {
             if ch == '\n' || ch == '\x00' {
                 break;
@@ -349,7 +393,11 @@ impl<'storage> Lexer<'storage> {
     /// https://protobuf.com/docs/language-spec#whitespace-and-comments
     fn consume_block_comment(&mut self) {
         debug_assert!(self.cursor.peek().is_some());
+        debug_assert!(self.cursor.peek().unwrap() == '/');
+        _ = self.next_char_with_index(); // Consume the "/"
+        debug_assert!(self.cursor.peek().is_some());
         debug_assert!(self.cursor.peek().unwrap() == '*');
+        _ = self.next_char_with_index(); // Consume the "*"
         while let Some((_, ch)) = self.next_char_with_index() {
             if ch == '*' {
                 if let Some((_, next_ch)) = self.next_char_with_index() {
@@ -373,108 +421,41 @@ impl<'storage> Iterator for Lexer<'storage> {
 fn is_whitespace(ch: char) -> bool {
     // https://protobuf.com/docs/language-spec#whitespace-and-comments
     match ch {
-        ' ' => true,
-        '\n' => true,
-        '\r' => true,
-        '\t' => true,
+        ' ' | '\n' | '\r' | '\t' => true,
         '\x0c' => true, // Form-feed
         '\x0b' => true, // Vertical-tab
         _ => false,
     }
 }
 
-// impl<'a> TokenizedBuffer<'a> {
-//     pub fn new(source_buffer: &'a SourceBuffer) -> TokenizedBuffer<'a> {
-//         let mut tokenized_buffer = TokenizedBuffer {
-//             source_buffer,
-//             token_info_vec: vec![],
-//             string_literal_storage: vec![],
-//             integer_literal_storage: vec![],
-//             float_literal_storage: vec![],
-//             identifier_reference_storage: vec![],
-//             current_line: 1,
-//         };
-//         tokenized_buffer.lex(&mut source_buffer.text());
-//         tokenized_buffer
-//     }
-//     fn consume_single_line_comment(&mut self, source_text: &mut SliceView) {
-//         debug_assert!(source_text.starts_with("//"));
-//         drop_first(source_text, 2);
-//         let mut remaining_chars = source_text.chars();
-//         while let Some(ch) = remaining_chars.next() {
-//             if ch == '\n' {
-//                 self.current_line += 1;
-//                 *source_text = remaining_chars.as_str();
-//                 return;
-//             }
-//             if ch == '\x00' {
-//                 *source_text = remaining_chars.as_str();
-//                 return;
-//             }
-//         }
-//         *source_text = "";
-//     }
-
-//     fn consume_block_comment(&mut self, source_text: &mut SliceView) {
-//         debug_assert!(source_text.starts_with("/*"));
-//         drop_first(source_text, 2);
-//         let mut remaining_chars = source_text.chars();
-//         while let Some(ch) = remaining_chars.next() {
-//             if ch == '*' {
-//                 if let Some(second_ch) = remaining_chars.next() {
-//                     if second_ch == '/' {
-//                         *source_text = remaining_chars.as_str();
-//                         return;
-//                     }
-//                 }
-//             } else if ch == '\n' {
-//                 self.current_line += 1;
-//             }
-//         }
-//         *source_text = "";
-//     }
-
-//     fn consume_whitespace(&mut self, source_text: &mut SliceView) {
-//         let mut chars = source_text.chars();
-//         while let Some(ch) = chars.next() {
-//             if ch == '\n' {
-//                 self.current_line += 1;
-//             }
-//             if !is_whitespace(ch) {
-//                 break;
-//             }
-//         }
-//     }
-
-//     /// https://protobuf.com/docs/language-spec#whitespace-and-comments
-//     fn skip_whitespace_and_comments(&mut self, source_text: &mut SliceView) {
-//         while !source_text.is_empty() {
-//             if source_text.starts_with("//") {
-//                 self.consume_single_line_comment(source_text);
-//             } else if source_text.starts_with("/*") {
-//                 self.consume_block_comment(source_text)
-//             } else if is_whitespace(source_text.chars().nth(0).unwrap()) {
-//                 self.consume_whitespace(source_text)
-//             } else {
-//                 break;
-//             }
-//         }
-//     }
-//     fn lex(&mut self, source_text: &mut SliceView) {
-//         loop {
-//             if (source_text.is_empty()) {
-//                 self.token_info_vec.push(TokenInfo {
-//                     token_kind: TokenKind::Eof,
-//                     token_line: todo!(),
-//                     token_column_offset: todo!(),
-//                 })
-//             }
-//             self.skip_whitespace_and_comments(source_text);
-//         }
-//     }
-// }
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_consume_whitespace_and_comments() {
+        {
+            let mut lexer = Lexer::new("");
+            assert!(lexer.next().is_none());
+        }
+        {
+            let mut lexer = Lexer::new("             //");
+            assert!(lexer.next().is_none());
+        }
+        {
+            let mut lexer = Lexer::new("/* Comment */ // // // // // // // // ");
+            assert!(lexer.next().is_none());
+        }
+        {
+            let source_text = r#"
+                // Single Line Comment
+                /* Multi-line comment line 1
+                 * Multi-line comment line 2
+                 * Multi-line comment line 3
+                 */
+            "#;
+            let mut lexer = Lexer::new(source_text);
+            assert!(lexer.next().is_none());
+        }
+    }
 }
