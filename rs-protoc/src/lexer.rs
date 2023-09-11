@@ -2,7 +2,7 @@ use std::str::CharIndices;
 
 use crate::source_text::SourceBuffer;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum TokenKind<'storage> {
     Identifier(&'storage str),
     IntegerLiteral(&'storage str),
@@ -63,7 +63,7 @@ pub enum TokenKind<'storage> {
     Bytes,
     Group,
     Returns,
-    Error(&'storage str), /* Not a valid token that can be consumed by the parser */
+    Error(String),
 }
 
 pub struct Token<'storage> {
@@ -71,6 +71,11 @@ pub struct Token<'storage> {
     line_number: usize,  // 1 based line number
     column_index: usize, // 1 based column index
     character_index: usize,
+}
+
+struct Span {
+    start: usize,
+    end: usize,
 }
 
 struct Cursor<'source> {
@@ -86,19 +91,8 @@ impl<'source> Cursor<'source> {
         }
     }
 
-    fn next(&mut self) -> Option<char> {
-        match self.iter.next() {
-            Some((_, ch)) => Some(ch),
-            None => None,
-        }
-    }
-
     fn next_with_index(&mut self) -> Option<(usize, char)> {
         self.iter.next()
-    }
-
-    fn is_eof(&self) -> bool {
-        self.peek().is_none()
     }
 
     fn peek(&self) -> Option<char> {
@@ -118,17 +112,6 @@ impl<'source> Cursor<'source> {
             None => None,
         }
     }
-
-    fn peek_with_index(&self) -> Option<(usize, char)> {
-        self.iter.clone().next()
-    }
-
-    fn peek_index(&self) -> Option<usize> {
-        match self.iter.clone().next() {
-            Some((index, _)) => Some(index),
-            None => None,
-        }
-    }
 }
 
 struct Lexer<'storage> {
@@ -136,15 +119,21 @@ struct Lexer<'storage> {
     cursor: Cursor<'storage>,
     current_line_column: usize,
     current_line_number: usize,
+    current_line_start_char_offset: usize,
+    number_of_characters_consumed: usize,
+    seen_error: bool,
 }
 
 impl<'storage> Lexer<'storage> {
-    fn new(source_text: &'storage str) -> Self {
+    pub fn new(source_text: &'storage str) -> Self {
         Lexer {
             source_text,
             cursor: Cursor::new(source_text),
             current_line_column: 0,
             current_line_number: 0,
+            number_of_characters_consumed: 0,
+            current_line_start_char_offset: 0,
+            seen_error: false,
         }
     }
 
@@ -156,8 +145,73 @@ impl<'storage> Lexer<'storage> {
         todo!()
     }
 
-    fn string_literal(&mut self) -> Option<Token<'storage>> {
-        todo!()
+    fn string_literal(&mut self, string_literal_header: char) -> Option<Token<'storage>> {
+        debug_assert!(string_literal_header == '\'' || string_literal_header == '\"');
+        let string_literal_start_index = self.number_of_characters_consumed;
+        loop {
+            if let Some((index, ch)) = self.next_char_with_index() {
+                match ch {
+                    '\n' => {
+                        return Some(Token {
+                            kind: self.get_error_token(
+                                "Unterminated string literal",
+                                Some(Span {
+                                    start: string_literal_start_index,
+                                    end: index,
+                                }),
+                            ),
+                            line_number: self.current_line_number,
+                            column_index: self.current_line_column,
+                            character_index: string_literal_start_index,
+                        });
+                    }
+                    '\x00' => {
+                        return Some(Token {
+                            kind: self.get_error_token(
+                                "Unterminated string literal",
+                                Some(Span {
+                                    start: string_literal_start_index,
+                                    end: index,
+                                }),
+                            ),
+                            line_number: self.current_line_number,
+                            column_index: self.current_line_column,
+                            character_index: string_literal_start_index,
+                        });
+                    }
+                    '\\' => {
+                        // Start of escape sequence
+                        if !self.consume_escape_sequence() {
+                            return Some(Token {
+                                kind: self.get_error_token(
+                                    "Invalid escape sequence in string literal",
+                                    Some(Span {
+                                        start: string_literal_start_index,
+                                        end: index,
+                                    }),
+                                ),
+                                line_number: self.current_line_number,
+                                column_index: self.current_line_column,
+                                character_index: string_literal_start_index,
+                            });
+                        }
+                    }
+                    ch if ch == string_literal_header => {
+                        // '\'' OR '\"'
+                        return Some(Token {
+                            kind: TokenKind::StringLiteral(
+                                &self.source_text[string_literal_start_index..index],
+                            ),
+                            line_number: self.current_line_number,
+                            column_index: self.current_line_column,
+                            character_index: string_literal_start_index,
+                        });
+                    }
+
+                    _ => todo!(),
+                }
+            }
+        }
     }
 
     fn next_token(&mut self) -> Option<Token<'storage>> {
@@ -297,12 +351,18 @@ impl<'storage> Lexer<'storage> {
                         character_index: index,
                     })
                 }
-                '\'' | '"' => return self.string_literal(),
+                '\'' | '"' => return self.string_literal(ch),
                 '0'..='9' => return self.numeric_literal(),
                 'a'..='z' | 'A'..='Z' | '_' => return self.identifier_or_keyword(),
                 _ => {
                     return Some(Token {
-                        kind: TokenKind::Error(&self.source_text[index..index + 1]),
+                        kind: self.get_error_token(
+                            "Unknown character",
+                            Some(Span {
+                                start: index,
+                                end: index + 1,
+                            }),
+                        ),
                         line_number: self.current_line_number,
                         column_index: self.current_line_column,
                         character_index: index,
@@ -311,6 +371,35 @@ impl<'storage> Lexer<'storage> {
             }
         }
         None
+    }
+
+    fn get_current_line(&self) -> &'storage str {
+        if self.current_line_start_char_offset < self.source_text.len() {
+            if let Some(end) = self.source_text[self.current_line_start_char_offset..]
+                .chars()
+                .position(|ch| ch == '\n')
+            {
+                return &self.source_text[self.current_line_start_char_offset..end];
+            }
+        }
+        ""
+    }
+
+    fn get_source_filename(&self) -> Option<String> {
+        None
+    }
+
+    fn get_error_token(&mut self, message: &str, _span: Option<Span>) -> TokenKind<'storage> {
+        self.seen_error = true;
+        let mut error_message = format!("Lexer error {}\n", message);
+        error_message += format!(
+            "{}:{}",
+            self.get_source_filename().unwrap_or("Line".to_string()),
+            self.current_line_number
+        )
+        .as_str();
+
+        TokenKind::Error(error_message)
     }
 
     /// https://protobuf.com/docs/language-spec#whitespace-and-comments
@@ -362,9 +451,11 @@ impl<'storage> Lexer<'storage> {
     fn next_char_with_index(&mut self) -> Option<(usize, char)> {
         match self.cursor.next_with_index() {
             Some((index, ch)) => {
+                self.number_of_characters_consumed += 1;
                 if ch == '\n' {
                     self.current_line_number += 1;
                     self.current_line_column = 1;
+                    self.current_line_start_char_offset = index + 1;
                 } else if ch == '\t' {
                     self.current_line_column += 4;
                 } else {
@@ -406,6 +497,67 @@ impl<'storage> Lexer<'storage> {
                     }
                 }
             }
+        }
+    }
+
+    fn consume_hex_escape_sequence(&mut self) -> bool {
+        if let Some((_, ch)) = self.next_char_with_index() {
+            match ch {
+                '0'..='9' | 'a'..='z' | 'A'..='Z' => {
+                    // Matched first required hexadecimal character
+                    if let Some(ch) = self.cursor.peek() {
+                        match ch {
+                            '0'..='9' | 'a'..='z' | 'A'..='Z' => {
+                                _ = self.next_char_with_index(); // Consume second optional hexadecimal character
+                                true
+                            }
+                            _ => true,
+                        }
+                    } else {
+                        true
+                    }
+                }
+                _ => {
+                    return false;
+                }
+            }
+        } else {
+            return false;
+        }
+    }
+
+    fn consume_octal_escape_sequence(&mut self) -> bool {
+        while let Some((_, ch)) = self.next_char_with_index() {}
+        todo!()
+    }
+
+    fn consume_unicode_escape_sequence(&mut self, header: char) -> bool {
+        while let Some((_, ch)) = self.next_char_with_index() {}
+        todo!()
+    }
+
+    fn consume_escape_sequence(&mut self) -> bool {
+        let consume_unicode_escape_sequence =
+            |header: char, cursor: &mut Cursor<'storage>| -> bool { todo!() };
+        match self.next_char_with_index() {
+            Some((_, ch)) => match ch {
+                'a' => true,
+                'b' => true,
+                'f' => true,
+                'n' => true,
+                'r' => true,
+                't' => true,
+                'v' => true,
+                '\\' => true,
+                '\'' => true,
+                '\"' => true,
+                '?' => true,
+                'x' | 'X' => self.consume_hex_escape_sequence(),
+                '0'..='7' => self.consume_octal_escape_sequence(),
+                'u' | 'U' => self.consume_unicode_escape_sequence(ch),
+                _ => false,
+            },
+            None => false,
         }
     }
 }
