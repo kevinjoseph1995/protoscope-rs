@@ -1,13 +1,15 @@
 use std::str::CharIndices;
 
+use byteyarn::YarnBox;
+
 use crate::source_text::SourceBuffer;
 
 #[derive(Clone)]
 pub enum TokenKind<'storage> {
-    Identifier(&'storage str),
+    Identifier(YarnBox<'storage, str>),
     IntegerLiteral(&'storage str),
     FloatLiteral(&'storage str),
-    StringLiteral(&'storage str),
+    StringLiteral(YarnBox<'storage, str>),
     Semicolon,
     Colon,
     LParen,
@@ -146,8 +148,10 @@ impl<'storage> Lexer<'storage> {
     }
 
     fn string_literal(&mut self, string_literal_header: char) -> Option<Token<'storage>> {
+        // We've already consumed the quote
         debug_assert!(string_literal_header == '\'' || string_literal_header == '\"');
         let string_literal_start_index = self.number_of_characters_consumed;
+        let mut escaped_sequence = String::new();
         loop {
             if let Some((index, ch)) = self.next_char_with_index() {
                 match ch {
@@ -181,7 +185,12 @@ impl<'storage> Lexer<'storage> {
                     }
                     '\\' => {
                         // Start of escape sequence
-                        if !self.consume_escape_sequence() {
+                        if escaped_sequence.is_empty() {
+                            // Trigger a dynamic allocation and capture all the characters until the start of the escape sequence
+                            escaped_sequence
+                                .push_str(&self.source_text[string_literal_start_index..index]);
+                        }
+                        if !self.consume_escape_sequence(&mut escaped_sequence) {
                             return Some(Token {
                                 kind: self.get_error_token(
                                     "Invalid escape sequence in string literal",
@@ -198,18 +207,46 @@ impl<'storage> Lexer<'storage> {
                     }
                     ch if ch == string_literal_header => {
                         // '\'' OR '\"'
-                        return Some(Token {
-                            kind: TokenKind::StringLiteral(
-                                &self.source_text[string_literal_start_index..index],
-                            ),
-                            line_number: self.current_line_number,
-                            column_index: self.current_line_column,
-                            character_index: string_literal_start_index,
-                        });
+                        if escaped_sequence.len() > 0 {
+                            return Some(Token {
+                                kind: TokenKind::StringLiteral(YarnBox::from_string(
+                                    escaped_sequence,
+                                )),
+                                line_number: self.current_line_number,
+                                column_index: self.current_line_column,
+                                character_index: string_literal_start_index,
+                            });
+                        } else {
+                            return Some(Token {
+                                kind: TokenKind::StringLiteral(YarnBox::new(
+                                    &self.source_text[string_literal_start_index..index],
+                                )),
+                                line_number: self.current_line_number,
+                                column_index: self.current_line_column,
+                                character_index: string_literal_start_index,
+                            });
+                        }
                     }
-
-                    _ => todo!(),
+                    ch => {
+                        if escaped_sequence.len() > 0 {
+                            // We've already triggered an allocation previously when we came across an escape sequence
+                            escaped_sequence.push(ch);
+                        }
+                    }
                 }
+            } else {
+                return Some(Token {
+                    kind: self.get_error_token(
+                        "Unterminated string literal",
+                        Some(Span {
+                            start: string_literal_start_index,
+                            end: self.source_text.len(),
+                        }),
+                    ),
+                    line_number: self.current_line_number,
+                    column_index: self.current_line_column,
+                    character_index: string_literal_start_index,
+                });
             }
         }
     }
@@ -500,61 +537,137 @@ impl<'storage> Lexer<'storage> {
         }
     }
 
-    fn consume_hex_escape_sequence(&mut self) -> bool {
-        if let Some((_, ch)) = self.next_char_with_index() {
-            match ch {
-                '0'..='9' | 'a'..='z' | 'A'..='Z' => {
-                    // Matched first required hexadecimal character
-                    if let Some(ch) = self.cursor.peek() {
-                        match ch {
-                            '0'..='9' | 'a'..='z' | 'A'..='Z' => {
-                                _ = self.next_char_with_index(); // Consume second optional hexadecimal character
-                                true
-                            }
-                            _ => true,
-                        }
-                    } else {
-                        true
+    fn consume_hex_escape_sequence(&mut self, escaped_string: &mut String) -> bool {
+        let mut hex_digits_as_bytes: [Option<u8>; 2] = [None, None];
+        if let Some((_, first_required_char)) = self.next_char_with_index() {
+            if first_required_char.is_ascii_hexdigit() {
+                hex_digits_as_bytes[0] = Some(first_required_char.to_digit(16).unwrap() as u8);
+                if let Some(second_optional_char) = self.cursor.peek() {
+                    if second_optional_char.is_ascii_hexdigit() {
+                        _ = self.next_char_with_index(); // Consume the second optional char
+
+                        hex_digits_as_bytes[1] =
+                            Some(second_optional_char.to_digit(16).unwrap() as u8);
                     }
                 }
-                _ => {
-                    return false;
+                if hex_digits_as_bytes[1].is_none() {
+                    // SAFETY: We just checked above that the character is a valid ascii hex digit
+                    escaped_string.push_str(unsafe {
+                        std::str::from_utf8_unchecked(&[hex_digits_as_bytes[0].unwrap()])
+                    });
+                } else {
+                    // SAFETY: We just checked above that the extracted 2 characters are valid ascii hex digit
+                    escaped_string.push_str(unsafe {
+                        std::str::from_utf8_unchecked(&[
+                            hex_digits_as_bytes[0].unwrap(),
+                            hex_digits_as_bytes[1].unwrap(),
+                        ])
+                    });
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn consume_octal_escape_sequence(&mut self, escaped_string: &mut String) {
+        let is_octal_digit = |ch: char| match ch {
+            '0'..='7' => true,
+            _ => false,
+        };
+        if let Some(first_optional_char) = self.cursor.peek() {
+            if is_octal_digit(first_optional_char) {
+                escaped_string.push(first_optional_char);
+                _ = self.next_char_with_index(); // Consume the first optional char
+                if let Some(second_optional_char) = self.cursor.peek() {
+                    if is_octal_digit(second_optional_char) {
+                        _ = self.next_char_with_index(); // Consume the second optional char
+                        escaped_string.push(second_optional_char);
+                    }
                 }
             }
-        } else {
-            return false;
         }
     }
 
-    fn consume_octal_escape_sequence(&mut self) -> bool {
-        while let Some((_, ch)) = self.next_char_with_index() {}
-        todo!()
+    fn consume_unicode_escape_sequence(
+        &mut self,
+        escaped_string: &mut String,
+        header: char,
+    ) -> bool {
+        debug_assert!(header == 'u' || header == 'U');
+        let mut consume_n_hex_digits = |n: usize| -> bool {
+            for _ in 0..n {
+                match self.next_char_with_index() {
+                    Some((_, ch)) => {
+                        if ch.is_ascii_hexdigit() {
+                            escaped_string.push(ch);
+                        } else {
+                            // Found non hex digit
+                            return false;
+                        }
+                    }
+                    None => return false, // Ran out of digits
+                }
+            }
+            return true;
+        };
+
+        match header {
+            'u' => consume_n_hex_digits(4),
+            'U' => consume_n_hex_digits(8),
+            _ => unreachable!(),
+        }
     }
 
-    fn consume_unicode_escape_sequence(&mut self, header: char) -> bool {
-        while let Some((_, ch)) = self.next_char_with_index() {}
-        todo!()
-    }
-
-    fn consume_escape_sequence(&mut self) -> bool {
-        let consume_unicode_escape_sequence =
-            |header: char, cursor: &mut Cursor<'storage>| -> bool { todo!() };
+    fn consume_escape_sequence(&mut self, escaped_string: &mut String) -> bool {
         match self.next_char_with_index() {
             Some((_, ch)) => match ch {
-                'a' => true,
-                'b' => true,
-                'f' => true,
-                'n' => true,
-                'r' => true,
-                't' => true,
-                'v' => true,
-                '\\' => true,
-                '\'' => true,
-                '\"' => true,
-                '?' => true,
-                'x' | 'X' => self.consume_hex_escape_sequence(),
-                '0'..='7' => self.consume_octal_escape_sequence(),
-                'u' | 'U' => self.consume_unicode_escape_sequence(ch),
+                'a' => {
+                    escaped_string.push('\x07'); // Alert bell
+                    return true;
+                }
+                'b' => {
+                    escaped_string.push('\x08'); // Back space
+                    return true;
+                }
+                'f' => {
+                    escaped_string.push('\x0c'); // Form feed
+                    return true;
+                }
+                'n' => {
+                    escaped_string.push('\n'); // New line
+                    return true;
+                }
+                'r' => {
+                    escaped_string.push('\x0d'); // Carriage return
+                    return true;
+                }
+                't' => {
+                    escaped_string.push('\t'); // Horizontal tab
+                    return true;
+                }
+                'v' => {
+                    escaped_string.push('\x0b'); // Vertical tab
+                    return true;
+                }
+                '\"' => {
+                    escaped_string.push('\"');
+                    return true;
+                }
+                '\'' => {
+                    escaped_string.push('\'');
+                    return true;
+                }
+                '?' => {
+                    escaped_string.push('?');
+                    return true;
+                }
+                'x' | 'X' => self.consume_hex_escape_sequence(escaped_string),
+                '0'..='7' => {
+                    self.consume_octal_escape_sequence(escaped_string);
+                    return true;
+                }
+                'u' | 'U' => self.consume_unicode_escape_sequence(escaped_string, ch),
                 _ => false,
             },
             None => false,
@@ -608,6 +721,50 @@ mod tests {
             "#;
             let mut lexer = Lexer::new(source_text);
             assert!(lexer.next().is_none());
+        }
+    }
+
+    #[test]
+    fn test_string_literal_1() {
+        let mut lexer = Lexer::new("\"StringLiteral\"");
+        let result = lexer.next();
+        assert!(result.is_some());
+        let token = result.unwrap();
+        match token.kind {
+            TokenKind::StringLiteral(string) => {
+                assert!(string == "StringLiteral");
+            }
+            _ => assert!(false),
+        }
+    }
+    #[test]
+    fn test_string_literal_2() {
+        let mut lexer = Lexer::new("\"String\\nLiteral\"");
+        let result = lexer.next();
+        assert!(result.is_some());
+        let token = result.unwrap();
+        match token.kind {
+            TokenKind::StringLiteral(string) => {
+                assert!(string == "String\nLiteral");
+            }
+            _ => assert!(false),
+        }
+    }
+
+    #[test]
+    fn test_string_literal_3() {
+        let mut lexer = Lexer::new("'First\\x09Second'");
+        let result = lexer.next();
+        assert!(result.is_some());
+        let token = result.unwrap();
+        match token.kind {
+            TokenKind::StringLiteral(string) => {
+                let strref = "First\tSecond";
+                println!("{}", strref.len());
+                println!("{}", string.len());
+                assert!(string == "First\tSecond");
+            }
+            _ => assert!(false),
         }
     }
 }
