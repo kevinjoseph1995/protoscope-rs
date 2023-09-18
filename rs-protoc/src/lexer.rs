@@ -1,4 +1,4 @@
-use std::{ops::Shl, str::CharIndices};
+use std::{ops::Shl, str::Chars};
 
 use byteyarn::YarnBox;
 
@@ -82,33 +82,49 @@ struct Span {
 
 struct Cursor<'source> {
     source_text: &'source str,
-    iter: CharIndices<'source>,
+    iter: Chars<'source>,
+    number_of_chars_consumed: usize,
+}
+
+impl Span {
+    fn len(&self) {
+        debug_assert!(self.end >= self.start);
+        self.end - self.start;
+    }
 }
 
 impl<'source> Cursor<'source> {
     fn new(source_text: &'source str) -> Self {
         Self {
             source_text: source_text,
-            iter: source_text.char_indices(),
+            iter: source_text.chars(),
+            number_of_chars_consumed: 0,
         }
     }
 
     fn next_with_index(&mut self) -> Option<(usize, char)> {
-        self.iter.next()
+        if let Some(ch) = self.iter.next() {
+            let index = self.number_of_chars_consumed;
+            self.number_of_chars_consumed += 1;
+            Some((index, ch))
+        } else {
+            None
+        }
+    }
+
+    fn get_current_index(&self) -> usize {
+        self.number_of_chars_consumed
     }
 
     fn peek(&self) -> Option<char> {
-        match self.iter.clone().next() {
-            Some((_, ch)) => Some(ch),
-            None => None,
-        }
+        self.iter.clone().next()
     }
 
     fn peek_next(&self) -> Option<char> {
         let mut iter = self.iter.clone();
         match iter.next() {
             Some(_) => match iter.next() {
-                Some((_, ch)) => Some(ch),
+                Some(ch) => Some(ch),
                 None => None,
             },
             None => None,
@@ -143,9 +159,83 @@ impl<'storage> Lexer<'storage> {
         todo!()
     }
 
+    fn consume_decimal_digits(&mut self) {
+        loop {
+            if let Some(ch) = self.cursor.peek() {
+                if ch.is_ascii_digit() {
+                    _ = self.next_char_with_index();
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+    }
+    fn consume_hex_digits(&mut self) {
+        loop {
+            if let Some(ch) = self.cursor.peek() {
+                if ch.is_ascii_hexdigit() {
+                    _ = self.next_char_with_index();
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn consume_octal_digits(&mut self) {
+        loop {
+            if let Some(ch) = self.cursor.peek() {
+                match ch {
+                    '0'..='7' => {
+                        _ = self.next_char_with_index();
+                    }
+                    _ => {
+                        break;
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
     fn numeric_literal(&mut self, header: char) -> Option<Token<'storage>> {
         debug_assert!(header.is_numeric() || header == '.');
+        // Note: At this point we've already consumed 1 character of the numeric literal from the cursor
         let numeric_literal_start_index = self.number_of_characters_consumed - 1;
+        // The various components of a numeric literal:
+        // [radix] int_part [. fract_part [[ep] [+-] exponent_part]]
+        enum Radix {
+            Decimal,
+            Hexadecimal,
+            Octal,
+        }
+        let mut radix = Radix::Decimal; // Default to a decimal radix for the integral part
+
+        // Update based on prefix
+        if let Some(ch) = self.cursor.peek() {
+            if ch == '0' {
+                radix = Radix::Octal;
+                if let Some(ch) = self.cursor.peek_next() {
+                    if ch == 'X' || ch == 'x' {
+                        radix = Radix::Hexadecimal;
+                        _ = self.next_char_with_index();
+                    }
+                }
+                _ = self.next_char_with_index();
+            }
+        }
+        match radix {
+            Radix::Decimal => self.consume_decimal_digits(),
+            Radix::Hexadecimal => self.consume_hex_digits(),
+            Radix::Octal => self.consume_octal_digits(),
+        }
+        let integral_part: Span = Span {
+            start: numeric_literal_start_index,
+            end: self.cursor.get_current_index(),
+        };
         todo!();
     }
 
