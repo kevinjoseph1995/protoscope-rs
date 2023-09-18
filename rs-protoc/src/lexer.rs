@@ -1,4 +1,4 @@
-use std::str::CharIndices;
+use std::{ops::Shl, str::CharIndices};
 
 use byteyarn::YarnBox;
 
@@ -143,8 +143,10 @@ impl<'storage> Lexer<'storage> {
         todo!()
     }
 
-    fn numeric_literal(&mut self) -> Option<Token<'storage>> {
-        todo!()
+    fn numeric_literal(&mut self, header: char) -> Option<Token<'storage>> {
+        debug_assert!(header.is_numeric() || header == '.');
+        let numeric_literal_start_index = self.number_of_characters_consumed - 1;
+        todo!();
     }
 
     fn string_literal(&mut self, string_literal_header: char) -> Option<Token<'storage>> {
@@ -322,7 +324,7 @@ impl<'storage> Lexer<'storage> {
                 '.' => {
                     if let Some(ch) = self.cursor.peek() {
                         if ch.is_numeric() {
-                            return self.numeric_literal();
+                            return self.numeric_literal(ch);
                         }
                     }
                     return Some(Token {
@@ -389,7 +391,7 @@ impl<'storage> Lexer<'storage> {
                     })
                 }
                 '\'' | '"' => return self.string_literal(ch),
-                '0'..='9' => return self.numeric_literal(),
+                '0'..='9' => return self.numeric_literal(ch),
                 'a'..='z' | 'A'..='Z' | '_' => return self.identifier_or_keyword(),
                 _ => {
                     return Some(Token {
@@ -410,31 +412,10 @@ impl<'storage> Lexer<'storage> {
         None
     }
 
-    fn get_current_line(&self) -> &'storage str {
-        if self.current_line_start_char_offset < self.source_text.len() {
-            if let Some(end) = self.source_text[self.current_line_start_char_offset..]
-                .chars()
-                .position(|ch| ch == '\n')
-            {
-                return &self.source_text[self.current_line_start_char_offset..end];
-            }
-        }
-        ""
-    }
-
-    fn get_source_filename(&self) -> Option<String> {
-        None
-    }
-
     fn get_error_token(&mut self, message: &str, _span: Option<Span>) -> TokenKind<'storage> {
         self.seen_error = true;
         let mut error_message = format!("Lexer error {}\n", message);
-        error_message += format!(
-            "{}:{}",
-            self.get_source_filename().unwrap_or("Line".to_string()),
-            self.current_line_number
-        )
-        .as_str();
+        error_message += format!("{}", self.current_line_number).as_str();
 
         TokenKind::Error(error_message)
     }
@@ -538,32 +519,20 @@ impl<'storage> Lexer<'storage> {
     }
 
     fn consume_hex_escape_sequence(&mut self, escaped_string: &mut String) -> bool {
-        let mut hex_digits_as_bytes: [Option<u8>; 2] = [None, None];
+        let mut decoded_char: u32;
         if let Some((_, first_required_char)) = self.next_char_with_index() {
             if first_required_char.is_ascii_hexdigit() {
-                hex_digits_as_bytes[0] = Some(first_required_char.to_digit(16).unwrap() as u8);
-                if let Some(second_optional_char) = self.cursor.peek() {
-                    if second_optional_char.is_ascii_hexdigit() {
-                        _ = self.next_char_with_index(); // Consume the second optional char
-
-                        hex_digits_as_bytes[1] =
-                            Some(second_optional_char.to_digit(16).unwrap() as u8);
+                let digit = first_required_char.to_digit(16).unwrap(); // SAFETY: We  just checked above that the character is a valid hex digit.
+                decoded_char = digit;
+                if let Some(second_optional_character) = self.cursor.peek() {
+                    if second_optional_character.is_ascii_hexdigit() {
+                        _ = self.next_char_with_index(); // Consume the second hex digit
+                        let lower_nibble = second_optional_character.to_digit(16).unwrap(); // SAFETY: We  just checked above that the character is a valid hex digit.
+                        let upper_nibble = decoded_char << 4;
+                        decoded_char = upper_nibble | lower_nibble;
                     }
                 }
-                if hex_digits_as_bytes[1].is_none() {
-                    // SAFETY: We just checked above that the character is a valid ascii hex digit
-                    escaped_string.push_str(unsafe {
-                        std::str::from_utf8_unchecked(&[hex_digits_as_bytes[0].unwrap()])
-                    });
-                } else {
-                    // SAFETY: We just checked above that the extracted 2 characters are valid ascii hex digit
-                    escaped_string.push_str(unsafe {
-                        std::str::from_utf8_unchecked(&[
-                            hex_digits_as_bytes[0].unwrap(),
-                            hex_digits_as_bytes[1].unwrap(),
-                        ])
-                    });
-                }
+                escaped_string.push(std::char::from_u32(decoded_char).unwrap()/*Unwrap here as we've validated above that we are combing two valid nibbles*/);
                 return true;
             }
         }
@@ -596,11 +565,13 @@ impl<'storage> Lexer<'storage> {
     ) -> bool {
         debug_assert!(header == 'u' || header == 'U');
         let mut consume_n_hex_digits = |n: usize| -> bool {
+            let mut decoded_value: u32 = 0;
             for _ in 0..n {
                 match self.next_char_with_index() {
                     Some((_, ch)) => {
                         if ch.is_ascii_hexdigit() {
-                            escaped_string.push(ch);
+                            let nibble = ch.to_digit(16).unwrap();
+                            decoded_value = (decoded_value << 4) | nibble; // SAFETY: We  just checked above that the character is a valid hex digit.
                         } else {
                             // Found non hex digit
                             return false;
@@ -609,6 +580,11 @@ impl<'storage> Lexer<'storage> {
                     None => return false, // Ran out of digits
                 }
             }
+            let decode_result = std::char::from_u32(decoded_value);
+            if decode_result.is_none() {
+                return false;
+            }
+            escaped_string.push(decode_result.unwrap());
             return true;
         };
 
@@ -725,7 +701,7 @@ mod tests {
     }
 
     #[test]
-    fn test_string_literal_1() {
+    fn test_string_literal() {
         let mut lexer = Lexer::new("\"StringLiteral\"");
         let result = lexer.next();
         assert!(result.is_some());
@@ -738,7 +714,7 @@ mod tests {
         }
     }
     #[test]
-    fn test_string_literal_2() {
+    fn test_string_literal_newline_escape() {
         let mut lexer = Lexer::new("\"String\\nLiteral\"");
         let result = lexer.next();
         assert!(result.is_some());
@@ -752,19 +728,52 @@ mod tests {
     }
 
     #[test]
-    fn test_string_literal_3() {
+    fn test_string_literal_hex_escape() {
         let mut lexer = Lexer::new("'First\\x09Second'");
         let result = lexer.next();
         assert!(result.is_some());
         let token = result.unwrap();
         match token.kind {
             TokenKind::StringLiteral(string) => {
-                let strref = "First\tSecond";
-                println!("{}", strref.len());
-                println!("{}", string.len());
                 assert!(string == "First\tSecond");
             }
             _ => assert!(false),
+        }
+    }
+
+    #[test]
+    fn test_string_literal_unicode() {
+        {
+            let mut lexer = Lexer::new(
+                "'Long unicode escape can represent emojis \\U0001F389 but isn\\'t necessary 🎉'",
+            );
+            let result = lexer.next();
+            assert!(result.is_some());
+            let token = result.unwrap();
+            match token.kind {
+                TokenKind::StringLiteral(string) => {
+                    println!("{}", string);
+                    assert!(
+                        string
+                            == "Long unicode escape can represent emojis 🎉 but isn't necessary 🎉"
+                    );
+                }
+                _ => assert!(false),
+            }
+        }
+        {
+            let mut lexer =
+                Lexer::new("'A unicode right arrow can use unicode escape \\u2192 or not →'");
+            let result = lexer.next();
+            assert!(result.is_some());
+            let token = result.unwrap();
+            match token.kind {
+                TokenKind::StringLiteral(string) => {
+                    println!("{}", string);
+                    assert!(string == "A unicode right arrow can use unicode escape → or not →");
+                }
+                _ => assert!(false),
+            }
         }
     }
 }
