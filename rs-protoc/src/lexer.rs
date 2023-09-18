@@ -539,23 +539,27 @@ impl<'storage> Lexer<'storage> {
         return false;
     }
 
-    fn consume_octal_escape_sequence(&mut self, escaped_string: &mut String) {
+    fn consume_octal_escape_sequence(
+        &mut self,
+        first_octal_digit: char,
+        escaped_string: &mut String,
+    ) {
         let is_octal_digit = |ch: char| match ch {
             '0'..='7' => true,
             _ => false,
         };
-        if let Some(first_optional_char) = self.cursor.peek() {
-            if is_octal_digit(first_optional_char) {
-                escaped_string.push(first_optional_char);
-                _ = self.next_char_with_index(); // Consume the first optional char
-                if let Some(second_optional_char) = self.cursor.peek() {
-                    if is_octal_digit(second_optional_char) {
-                        _ = self.next_char_with_index(); // Consume the second optional char
-                        escaped_string.push(second_optional_char);
-                    }
+        assert!(is_octal_digit(first_octal_digit));
+        let mut decoded_byte: u32 = first_octal_digit.to_digit(8).unwrap(); // SAFETY: We  just checked above that the character is a valid hex digit.;
+        for _ in 1..=2 {
+            if let Some(optional_digit) = self.cursor.peek() {
+                if is_octal_digit(optional_digit) {
+                    let optional_digit = optional_digit.to_digit(8).unwrap();
+                    decoded_byte = decoded_byte << 3 | optional_digit;
+                    _ = self.next_char_with_index(); // Consume the digit
                 }
             }
         }
+        escaped_string.push(std::char::from_u32(decoded_byte).unwrap());
     }
 
     fn consume_unicode_escape_sequence(
@@ -640,7 +644,7 @@ impl<'storage> Lexer<'storage> {
                 }
                 'x' | 'X' => self.consume_hex_escape_sequence(escaped_string),
                 '0'..='7' => {
-                    self.consume_octal_escape_sequence(escaped_string);
+                    self.consume_octal_escape_sequence(ch, escaped_string);
                     return true;
                 }
                 'u' | 'U' => self.consume_unicode_escape_sequence(escaped_string, ch),
@@ -738,6 +742,34 @@ mod tests {
                 assert!(string == "First\tSecond");
             }
             _ => assert!(false),
+        }
+    }
+
+    #[test]
+    fn test_string_literal_octal_escape() {
+        {
+            let mut lexer = Lexer::new("'First\\011Second'");
+            let result = lexer.next();
+            assert!(result.is_some());
+            let token = result.unwrap();
+            match token.kind {
+                TokenKind::StringLiteral(string) => {
+                    assert!(string == "First\tSecond");
+                }
+                _ => assert!(false),
+            }
+        }
+        {
+            let mut lexer = Lexer::new("'First\\12Second'");
+            let result = lexer.next();
+            assert!(result.is_some());
+            let token = result.unwrap();
+            match token.kind {
+                TokenKind::StringLiteral(string) => {
+                    assert!(string == "First\nSecond");
+                }
+                _ => assert!(false),
+            }
         }
     }
 
