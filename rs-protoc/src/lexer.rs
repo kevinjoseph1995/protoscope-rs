@@ -2,13 +2,14 @@ use std::{ops::Shl, str::Chars};
 
 use byteyarn::YarnBox;
 
-use crate::source_text::SourceBuffer;
+use crate::error::{Result, RsProtocError};
+use std::str::FromStr;
 
 #[derive(Clone)]
 pub enum TokenKind<'storage> {
     Identifier(YarnBox<'storage, str>),
-    IntegerLiteral(&'storage str),
-    FloatLiteral(&'storage str),
+    IntegerLiteral(u64),
+    FloatLiteral(f64),
     StringLiteral(YarnBox<'storage, str>),
     Semicolon,
     Colon,
@@ -68,11 +69,27 @@ pub enum TokenKind<'storage> {
     Error(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Radix {
+    Decimal,
+    Hexadecimal,
+    Octal,
+}
+
+impl From<Radix> for u32 {
+    fn from(value: Radix) -> Self {
+        match value {
+            Radix::Decimal => 10,
+            Radix::Hexadecimal => 16,
+            Radix::Octal => 8,
+        }
+    }
+}
+
 pub struct Token<'storage> {
     kind: TokenKind<'storage>,
     line_number: usize,  // 1 based line number
     column_index: usize, // 1 based column index
-    character_index: usize,
 }
 
 struct Span {
@@ -90,6 +107,18 @@ impl Span {
     fn len(&self) {
         debug_assert!(self.end >= self.start);
         self.end - self.start;
+    }
+    fn is_empty(&self) -> bool {
+        debug_assert!(self.end >= self.start);
+        self.end == self.start
+    }
+    fn extract_from_source<'a>(&self, source: &'a str) -> &'a str {
+        debug_assert!(self.end >= self.start);
+        if self.is_empty() {
+            ""
+        } else {
+            &source[self.start..self.end]
+        }
     }
 }
 
@@ -201,42 +230,191 @@ impl<'storage> Lexer<'storage> {
         }
     }
 
+    fn determine_radix(&mut self, header: char) -> Radix {
+        debug_assert!(header.is_numeric() || header == '.');
+        let mut radix = Radix::Decimal; // Default to a decimal radix for the integral part
+        if header == '0' {
+            radix = Radix::Octal;
+            if let Some(ch) = self.cursor.peek() {
+                if ch == 'X' || ch == 'x' {
+                    radix = Radix::Hexadecimal;
+                    _ = self.next_char_with_index();
+                }
+            }
+        }
+        return radix;
+    }
+
+    fn extract_integral_part(&mut self, header: char, radix: Radix) -> Span {
+        debug_assert!(header.is_numeric() || header == '.');
+        if header == '.' {
+            // Example case: ".123" Integral part = ""
+            Span {
+                start: self.cursor.get_current_index(),
+                end: self.cursor.get_current_index(),
+            }
+        } else {
+            // Example case: "1.123" Integral part = "1"
+            let mut start = self.cursor.get_current_index() - 1;
+            match radix {
+                Radix::Decimal => self.consume_decimal_digits(),
+                Radix::Hexadecimal => {
+                    start += 1; // Move past the 'x'/'X'
+                    self.consume_hex_digits()
+                }
+                Radix::Octal => self.consume_octal_digits(),
+            }
+            Span {
+                start,
+                end: self.cursor.get_current_index(),
+            }
+        }
+    }
+
+    fn extract_fractional_part(
+        &mut self,
+        integral_part: &Span,
+        header: char,
+        radix: Radix,
+    ) -> Span {
+        // ".<FRACTIONAL_PART>"
+        debug_assert!(header.is_numeric() || header == '.');
+        if integral_part.is_empty() {
+            // This means that the header == '.'
+            assert!(header == '.');
+            // Example case: ".123" Fractional part = .123
+            let start = self.cursor.get_current_index() - 1;
+            self.consume_decimal_digits();
+            let end = self.cursor.get_current_index();
+            // We should have had decimal digits after the '.'
+            // Assert this
+            assert!(end > start);
+            Span { start, end }
+        } else {
+            // Default: Assume we don't have any fractional part
+            // Example case: "123" Fractional part = ""
+            let mut start = self.cursor.get_current_index();
+            let mut end = self.cursor.get_current_index();
+            if let Some(ch) = self.cursor.peek() {
+                if ch == '.' {
+                    // Example case: "123.666" Fractional part = .666
+                    start = self.cursor.get_current_index();
+                    _ = self.next_char_with_index();
+                    self.consume_decimal_digits();
+                    end = self.cursor.get_current_index();
+                }
+            }
+            Span { start, end }
+        }
+    }
+
+    fn extract_exponent(&mut self) -> Result<Span> {
+        // exponent  = ( "e" | "E" ) [ "+" | "-" ] <EXPONENT_PART>
+        // Default to empty span
+        let mut span = Span {
+            start: self.cursor.get_current_index(),
+            end: self.cursor.get_current_index(),
+        };
+        if let Some(ch) = self.cursor.peek() {
+            match ch {
+                'e' | 'E' => {
+                    _ = self.next_char_with_index();
+                    span.start += 1;
+                    if let Some(ch) = self.cursor.peek() {
+                        match ch {
+                            '+' | '-' => {
+                                // Consume optional '+'/'-' after the 'e'/'E'
+                                _ = self.next_char_with_index();
+                            }
+                            _ => {}
+                        }
+                    }
+                    let cached_index = self.cursor.get_current_index();
+                    self.consume_decimal_digits();
+                    if cached_index == self.cursor.get_current_index() {
+                        return Err(RsProtocError::LexError(
+                            "Expected decimal digits in exponent part of numeric literal"
+                                .to_string(),
+                        ));
+                    }
+                    span.end = self.cursor.get_current_index();
+                }
+                _ => {}
+            }
+        }
+        Ok(span)
+    }
+
     fn numeric_literal(&mut self, header: char) -> Option<Token<'storage>> {
         debug_assert!(header.is_numeric() || header == '.');
         // Note: At this point we've already consumed 1 character of the numeric literal from the cursor
-        let numeric_literal_start_index = self.number_of_characters_consumed - 1;
+        let numeric_literal_start_index = self.cursor.get_current_index() - 1;
         // The various components of a numeric literal:
         // [radix] int_part [. fract_part [[ep] [+-] exponent_part]]
-        enum Radix {
-            Decimal,
-            Hexadecimal,
-            Octal,
-        }
-        let mut radix = Radix::Decimal; // Default to a decimal radix for the integral part
-
-        // Update based on prefix
-        if let Some(ch) = self.cursor.peek() {
-            if ch == '0' {
-                radix = Radix::Octal;
-                if let Some(ch) = self.cursor.peek_next() {
-                    if ch == 'X' || ch == 'x' {
-                        radix = Radix::Hexadecimal;
-                        _ = self.next_char_with_index();
+        let radix = self.determine_radix(header);
+        let integral_part = self.extract_integral_part(header, radix);
+        let fractional_part: Span = self.extract_fractional_part(&integral_part, header, radix);
+        let exponent_part = match self.extract_exponent() {
+            Ok(exponent_part) => exponent_part,
+            Err(err) => {
+                return Some(Token {
+                    kind: self.get_error_token(err.to_string().as_str(), None),
+                    line_number: self.current_line_number,
+                    column_index: self.current_line_column,
+                });
+            }
+        };
+        eprintln!(
+            "RADIX:{:#?} INT:{} FRAC:{} EXPON:{}",
+            radix,
+            integral_part.extract_from_source(self.source_text),
+            fractional_part.extract_from_source(self.source_text),
+            exponent_part.extract_from_source(self.source_text)
+        );
+        let integral_value = {
+            if !integral_part.is_empty() {
+                match u64::from_str_radix(
+                    integral_part.extract_from_source(self.source_text),
+                    u32::from(radix),
+                ) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        return Some(Token {
+                            kind: self.get_error_token(err.to_string().as_str(), None),
+                            line_number: self.current_line_number,
+                            column_index: self.current_line_column,
+                        });
                     }
                 }
-                _ = self.next_char_with_index();
+            } else {
+                0u64
             }
-        }
-        match radix {
-            Radix::Decimal => self.consume_decimal_digits(),
-            Radix::Hexadecimal => self.consume_hex_digits(),
-            Radix::Octal => self.consume_octal_digits(),
-        }
-        let integral_part: Span = Span {
-            start: numeric_literal_start_index,
-            end: self.cursor.get_current_index(),
         };
-        todo!();
+        if fractional_part.is_empty() && exponent_part.is_empty() && !integral_part.is_empty() {
+            return Some(Token {
+                kind: TokenKind::IntegerLiteral(integral_value),
+                line_number: self.current_line_number,
+                column_index: self.current_line_column,
+            });
+        }
+        let fractional_value = {
+            if fractional_part.is_empty() {
+                0f64
+            } else {
+                match f64::from_str(fractional_part.extract_from_source(self.source_text)) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        return Some(Token {
+                            kind: self.get_error_token(err.to_string().as_str(), None),
+                            line_number: self.current_line_number,
+                            column_index: self.current_line_column,
+                        });
+                    }
+                }
+            }
+        };
+
+        todo!()
     }
 
     fn string_literal(&mut self, string_literal_header: char) -> Option<Token<'storage>> {
@@ -258,7 +436,6 @@ impl<'storage> Lexer<'storage> {
                             ),
                             line_number: self.current_line_number,
                             column_index: self.current_line_column,
-                            character_index: string_literal_start_index,
                         });
                     }
                     '\x00' => {
@@ -272,7 +449,6 @@ impl<'storage> Lexer<'storage> {
                             ),
                             line_number: self.current_line_number,
                             column_index: self.current_line_column,
-                            character_index: string_literal_start_index,
                         });
                     }
                     '\\' => {
@@ -293,7 +469,6 @@ impl<'storage> Lexer<'storage> {
                                 ),
                                 line_number: self.current_line_number,
                                 column_index: self.current_line_column,
-                                character_index: string_literal_start_index,
                             });
                         }
                     }
@@ -306,7 +481,6 @@ impl<'storage> Lexer<'storage> {
                                 )),
                                 line_number: self.current_line_number,
                                 column_index: self.current_line_column,
-                                character_index: string_literal_start_index,
                             });
                         } else {
                             return Some(Token {
@@ -315,7 +489,6 @@ impl<'storage> Lexer<'storage> {
                                 )),
                                 line_number: self.current_line_number,
                                 column_index: self.current_line_column,
-                                character_index: string_literal_start_index,
                             });
                         }
                     }
@@ -337,7 +510,6 @@ impl<'storage> Lexer<'storage> {
                     ),
                     line_number: self.current_line_number,
                     column_index: self.current_line_column,
-                    character_index: string_literal_start_index,
                 });
             }
         }
@@ -352,7 +524,6 @@ impl<'storage> Lexer<'storage> {
                         kind: TokenKind::Semicolon,
                         line_number: self.current_line_number,
                         column_index: self.current_line_column,
-                        character_index: index,
                     })
                 }
                 ':' => {
@@ -360,7 +531,6 @@ impl<'storage> Lexer<'storage> {
                         kind: TokenKind::Colon,
                         line_number: self.current_line_number,
                         column_index: self.current_line_column,
-                        character_index: index,
                     })
                 }
                 '(' => {
@@ -368,7 +538,6 @@ impl<'storage> Lexer<'storage> {
                         kind: TokenKind::LParen,
                         line_number: self.current_line_number,
                         column_index: self.current_line_column,
-                        character_index: index,
                     })
                 }
                 '[' => {
@@ -376,7 +545,6 @@ impl<'storage> Lexer<'storage> {
                         kind: TokenKind::LBracket,
                         line_number: self.current_line_number,
                         column_index: self.current_line_column,
-                        character_index: index,
                     })
                 }
                 ',' => {
@@ -384,7 +552,6 @@ impl<'storage> Lexer<'storage> {
                         kind: TokenKind::Comma,
                         line_number: self.current_line_number,
                         column_index: self.current_line_column,
-                        character_index: index,
                     })
                 }
                 '=' => {
@@ -392,7 +559,6 @@ impl<'storage> Lexer<'storage> {
                         kind: TokenKind::Equals,
                         line_number: self.current_line_number,
                         column_index: self.current_line_column,
-                        character_index: index,
                     })
                 }
                 ')' => {
@@ -400,7 +566,6 @@ impl<'storage> Lexer<'storage> {
                         kind: TokenKind::RParen,
                         line_number: self.current_line_number,
                         column_index: self.current_line_column,
-                        character_index: index,
                     })
                 }
                 ']' => {
@@ -408,12 +573,11 @@ impl<'storage> Lexer<'storage> {
                         kind: TokenKind::RBracket,
                         line_number: self.current_line_number,
                         column_index: self.current_line_column,
-                        character_index: index,
                     })
                 }
                 '.' => {
-                    if let Some(ch) = self.cursor.peek() {
-                        if ch.is_numeric() {
+                    if let Some(next_ch) = self.cursor.peek() {
+                        if next_ch.is_numeric() {
                             return self.numeric_literal(ch);
                         }
                     }
@@ -421,7 +585,6 @@ impl<'storage> Lexer<'storage> {
                         kind: TokenKind::Dot,
                         line_number: self.current_line_number,
                         column_index: self.current_line_column,
-                        character_index: index,
                     });
                 }
                 '-' => {
@@ -429,7 +592,6 @@ impl<'storage> Lexer<'storage> {
                         kind: TokenKind::Minus,
                         line_number: self.current_line_number,
                         column_index: self.current_line_column,
-                        character_index: index,
                     })
                 }
                 '{' => {
@@ -437,7 +599,6 @@ impl<'storage> Lexer<'storage> {
                         kind: TokenKind::LBrace,
                         line_number: self.current_line_number,
                         column_index: self.current_line_column,
-                        character_index: index,
                     })
                 }
                 '<' => {
@@ -445,7 +606,6 @@ impl<'storage> Lexer<'storage> {
                         kind: TokenKind::LAngle,
                         line_number: self.current_line_number,
                         column_index: self.current_line_column,
-                        character_index: index,
                     })
                 }
                 '/' => {
@@ -453,7 +613,6 @@ impl<'storage> Lexer<'storage> {
                         kind: TokenKind::Slash,
                         line_number: self.current_line_number,
                         column_index: self.current_line_column,
-                        character_index: index,
                     });
                 }
                 '+' => {
@@ -461,7 +620,6 @@ impl<'storage> Lexer<'storage> {
                         kind: TokenKind::Plus,
                         line_number: self.current_line_number,
                         column_index: self.current_line_column,
-                        character_index: index,
                     })
                 }
                 '}' => {
@@ -469,7 +627,6 @@ impl<'storage> Lexer<'storage> {
                         kind: TokenKind::RBrace,
                         line_number: self.current_line_number,
                         column_index: self.current_line_column,
-                        character_index: index,
                     })
                 }
                 '>' => {
@@ -477,7 +634,6 @@ impl<'storage> Lexer<'storage> {
                         kind: TokenKind::RAngle,
                         line_number: self.current_line_number,
                         column_index: self.current_line_column,
-                        character_index: index,
                     })
                 }
                 '\'' | '"' => return self.string_literal(ch),
@@ -494,7 +650,6 @@ impl<'storage> Lexer<'storage> {
                         ),
                         line_number: self.current_line_number,
                         column_index: self.current_line_column,
-                        character_index: index,
                     })
                 }
             }
@@ -897,5 +1052,10 @@ mod tests {
                 _ => assert!(false),
             }
         }
+    }
+    #[test]
+    fn test_numerical_literal() {
+        let mut lexer = Lexer::new("0x0f6db2");
+        let result = lexer.next();
     }
 }
