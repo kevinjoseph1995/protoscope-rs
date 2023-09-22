@@ -364,13 +364,6 @@ impl<'storage> Lexer<'storage> {
                 });
             }
         };
-        eprintln!(
-            "RADIX:{:#?} INT:{} FRAC:{} EXPON:{}",
-            radix,
-            integral_part.extract_from_source(self.source_text),
-            fractional_part.extract_from_source(self.source_text),
-            exponent_part.extract_from_source(self.source_text)
-        );
         let integral_value = {
             if !integral_part.is_empty() {
                 match u64::from_str_radix(
@@ -397,6 +390,7 @@ impl<'storage> Lexer<'storage> {
                 column_index: self.current_line_column,
             });
         }
+        let mut floating_point_number = integral_value as f64;
         let fractional_value = {
             if fractional_part.is_empty() {
                 0f64
@@ -413,8 +407,35 @@ impl<'storage> Lexer<'storage> {
                 }
             }
         };
+        floating_point_number += fractional_value;
+        if exponent_part.is_empty() {
+            return Some(Token {
+                kind: TokenKind::FloatLiteral(floating_point_number),
+                line_number: self.current_line_number,
+                column_index: self.current_line_column,
+            });
+        }
 
-        todo!()
+        let exponent_value: i32 = {
+            match i32::from_str_radix(exponent_part.extract_from_source(self.source_text), 10) {
+                Ok(value) => value,
+                Err(err) => {
+                    return Some(Token {
+                        kind: self.get_error_token(err.to_string().as_str(), None),
+                        line_number: self.current_line_number,
+                        column_index: self.current_line_column,
+                    });
+                }
+            }
+        };
+
+        floating_point_number = floating_point_number.powi(exponent_value);
+
+        return Some(Token {
+            kind: TokenKind::FloatLiteral(floating_point_number),
+            line_number: self.current_line_number,
+            column_index: self.current_line_column,
+        });
     }
 
     fn string_literal(&mut self, string_literal_header: char) -> Option<Token<'storage>> {
@@ -1055,7 +1076,7 @@ mod tests {
     }
     #[test]
     fn test_numerical_literal() {
-        let mut lexer = Lexer::new("0x0f6db2");
+        let mut lexer = Lexer::new("12.56e-20");
         let result = lexer.next();
     }
 }
