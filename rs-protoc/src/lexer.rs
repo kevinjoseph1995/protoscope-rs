@@ -145,6 +145,13 @@ impl<'source> Cursor<'source> {
         self.number_of_chars_consumed
     }
 
+    fn is_at_end(&self) -> bool {
+        match self.peek_next() {
+            Some(_) => false,
+            None => true,
+        }
+    }
+
     fn peek(&self) -> Option<char> {
         self.iter.clone().next()
     }
@@ -190,6 +197,9 @@ impl<'storage> Lexer<'storage> {
 
     fn consume_decimal_digits(&mut self) {
         loop {
+            if self.cursor.is_at_end() {
+                break;
+            }
             if let Some(ch) = self.cursor.peek() {
                 if ch.is_ascii_digit() {
                     _ = self.next_char_with_index();
@@ -203,9 +213,14 @@ impl<'storage> Lexer<'storage> {
     }
     fn consume_hex_digits(&mut self) {
         loop {
+            if self.cursor.is_at_end() {
+                break;
+            }
             if let Some(ch) = self.cursor.peek() {
                 if ch.is_ascii_hexdigit() {
                     _ = self.next_char_with_index();
+                } else {
+                    break;
                 }
             } else {
                 break;
@@ -215,6 +230,9 @@ impl<'storage> Lexer<'storage> {
 
     fn consume_octal_digits(&mut self) {
         loop {
+            if self.cursor.is_at_end() {
+                break;
+            }
             if let Some(ch) = self.cursor.peek() {
                 match ch {
                     '0'..='7' => {
@@ -245,14 +263,14 @@ impl<'storage> Lexer<'storage> {
         return radix;
     }
 
-    fn extract_integral_part(&mut self, header: char, radix: Radix) -> Span {
+    fn extract_integral_part(&mut self, header: char, radix: Radix) -> Result<Span> {
         debug_assert!(header.is_numeric() || header == '.');
         if header == '.' {
             // Example case: ".123" Integral part = ""
-            Span {
+            Ok(Span {
                 start: self.cursor.get_current_index(),
                 end: self.cursor.get_current_index(),
-            }
+            })
         } else {
             // Example case: "1.123" Integral part = "1"
             let mut start = self.cursor.get_current_index() - 1;
@@ -260,14 +278,20 @@ impl<'storage> Lexer<'storage> {
                 Radix::Decimal => self.consume_decimal_digits(),
                 Radix::Hexadecimal => {
                     start += 1; // Move past the 'x'/'X'
-                    self.consume_hex_digits()
+                    let cached_index = self.cursor.get_current_index();
+                    self.consume_hex_digits();
+                    if cached_index == self.cursor.get_current_index() {
+                        return Err(RsProtocError::LexError(
+                            "Expected hexadecimal digits after the \"0x\"/\"0X\"".to_string(),
+                        ));
+                    }
                 }
                 Radix::Octal => self.consume_octal_digits(),
             }
-            Span {
+            Ok(Span {
                 start,
                 end: self.cursor.get_current_index(),
-            }
+            })
         }
     }
 
@@ -348,11 +372,19 @@ impl<'storage> Lexer<'storage> {
     fn numeric_literal(&mut self, header: char) -> Option<Token<'storage>> {
         debug_assert!(header.is_numeric() || header == '.');
         // Note: At this point we've already consumed 1 character of the numeric literal from the cursor
-        let numeric_literal_start_index = self.cursor.get_current_index() - 1;
         // The various components of a numeric literal:
         // [radix] int_part [. fract_part [[ep] [+-] exponent_part]]
         let radix = self.determine_radix(header);
-        let integral_part = self.extract_integral_part(header, radix);
+        let integral_part = match self.extract_integral_part(header, radix) {
+            Ok(integral_part) => integral_part,
+            Err(err) => {
+                return Some(Token {
+                    kind: self.get_error_token(err.to_string().as_str(), None),
+                    line_number: self.current_line_number,
+                    column_index: self.current_line_column,
+                });
+            }
+        };
         let fractional_part: Span = self.extract_fractional_part(&integral_part, header, radix);
         let exponent_part = match self.extract_exponent() {
             Ok(exponent_part) => exponent_part,
@@ -429,7 +461,7 @@ impl<'storage> Lexer<'storage> {
             }
         };
 
-        floating_point_number = floating_point_number.powi(exponent_value);
+        floating_point_number = floating_point_number * 10f64.powi(exponent_value);
 
         return Some(Token {
             kind: TokenKind::FloatLiteral(floating_point_number),
@@ -1075,8 +1107,134 @@ mod tests {
         }
     }
     #[test]
-    fn test_numerical_literal() {
-        let mut lexer = Lexer::new("12.56e-20");
-        let result = lexer.next();
+    fn test_numerical_literal_floats() {
+        let mut lexer = Lexer::new("12.56e-12 .5 1e3");
+        {
+            let result = lexer.next();
+            assert!(result.is_some());
+            let token = result.unwrap();
+            match token.kind {
+                TokenKind::FloatLiteral(float_value) => {
+                    const GROUND_TRUTH: f64 = 12.56e-12;
+                    assert!((GROUND_TRUTH - float_value).abs() < 2.0f64 * &f64::EPSILON);
+                }
+                _ => assert!(false),
+            }
+        }
+        {
+            let result = lexer.next();
+            assert!(result.is_some());
+            let token = result.unwrap();
+            match token.kind {
+                TokenKind::FloatLiteral(float_value) => {
+                    const GROUND_TRUTH: f64 = 0.5;
+                    assert!((GROUND_TRUTH - float_value).abs() < 2.0f64 * &f64::EPSILON);
+                }
+                _ => assert!(false),
+            }
+        }
+
+        {
+            let result = lexer.next();
+            assert!(result.is_some());
+            let token = result.unwrap();
+            match token.kind {
+                TokenKind::FloatLiteral(float_value) => {
+                    const GROUND_TRUTH: f64 = 1e3;
+                    assert!((GROUND_TRUTH - float_value).abs() < 2.0f64 * &f64::EPSILON);
+                }
+                _ => assert!(false),
+            }
+        }
+    }
+
+    #[test]
+    fn test_numerical_literal_integers1() {
+        let mut lexer = Lexer::new("184467440737095516151 123 0123 0x123");
+        {
+            let result = lexer.next();
+            assert!(result.is_some());
+            let token = result.unwrap();
+            match token.kind {
+                TokenKind::Error(_) => { /*We expect an error here as  184467440737095516151 is > u64::MAX*/
+                }
+                _ => assert!(false),
+            }
+        }
+        {
+            let result = lexer.next();
+            assert!(result.is_some());
+            let token = result.unwrap();
+            match token.kind {
+                TokenKind::IntegerLiteral(value) => {
+                    assert!(value == 123)
+                }
+                _ => assert!(false),
+            }
+        }
+
+        {
+            let result = lexer.next();
+            assert!(result.is_some());
+            let token = result.unwrap();
+            match token.kind {
+                TokenKind::IntegerLiteral(value) => {
+                    assert!(value == 0o123)
+                }
+                _ => assert!(false),
+            }
+        }
+
+        {
+            let result = lexer.next();
+            assert!(result.is_some());
+            let token = result.unwrap();
+            match token.kind {
+                TokenKind::IntegerLiteral(value) => {
+                    assert!(value == 0x123)
+                }
+                _ => assert!(false),
+            }
+        }
+
+        {
+            let result = lexer.next();
+            assert!(result.is_some());
+            let token = result.unwrap();
+            match token.kind {
+                TokenKind::IntegerLiteral(value) => {
+                    assert!(value == 0x123)
+                }
+                _ => assert!(false),
+            }
+        }
+    }
+
+    #[test]
+    fn test_numerical_literal_integers2() {
+        {
+            let mut lexer = Lexer::new("08");
+            let result = lexer.next();
+            assert!(result.is_some());
+            let token = result.unwrap();
+            match token.kind {
+                TokenKind::IntegerLiteral(value) => {
+                    assert!(value == 0)
+                }
+                _ => assert!(false),
+            }
+        }
+
+        {
+            let mut lexer = Lexer::new("0xz");
+            let result = lexer.next();
+            assert!(result.is_some());
+            let token = result.unwrap();
+            match token.kind {
+                TokenKind::Error(_) => { /*We expect an error here as  0xz is an invalid hex literal*/
+                }
+                _ => assert!(false),
+            }
+        }
     }
 }
