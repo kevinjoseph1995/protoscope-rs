@@ -1,11 +1,11 @@
-use std::{ops::Shl, str::Chars};
+use crate::error::{Result, RsProtocError};
+
+use std::str::Chars;
+use std::str::FromStr;
 
 use byteyarn::YarnBox;
 
-use crate::error::{Result, RsProtocError};
-use std::str::FromStr;
-
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum TokenKind<'storage> {
     Identifier(YarnBox<'storage, str>),
     IntegerLiteral(u64),
@@ -66,15 +66,17 @@ pub enum TokenKind<'storage> {
     Bytes,
     Group,
     Returns,
-    Error(String),
+    Error(String), /*TODO Add more information here for better diagnostics */
 }
 
 fn get_keyword_token_kind<'a>(text: &'a str) -> Option<TokenKind<'a>> {
     const TABLE: [(&str, TokenKind); 39] = [
-        ("syntax", TokenKind::Syntax),
-        ("float", TokenKind::Float),
-        ("oneOf", TokenKind::OneOf),
         ("import", TokenKind::Import),
+        ("syntax", TokenKind::Syntax),
+        ("bool", TokenKind::Bool),
+        ("to", TokenKind::To),
+        ("oneOf", TokenKind::OneOf),
+        ("float", TokenKind::Float),
         ("double", TokenKind::Double),
         ("map", TokenKind::Map),
         ("weak", TokenKind::Weak),
@@ -82,7 +84,6 @@ fn get_keyword_token_kind<'a>(text: &'a str) -> Option<TokenKind<'a>> {
         ("extensions", TokenKind::Extensions),
         ("public", TokenKind::Public),
         ("int64", TokenKind::Int64),
-        ("to", TokenKind::To),
         ("package", TokenKind::Package),
         ("uint32", TokenKind::Uint32),
         ("max", TokenKind::Max),
@@ -101,7 +102,6 @@ fn get_keyword_token_kind<'a>(text: &'a str) -> Option<TokenKind<'a>> {
         ("required", TokenKind::Required),
         ("fixed64", TokenKind::Fixed64),
         ("service", TokenKind::Service),
-        ("bool", TokenKind::Bool),
         ("sfixed32", TokenKind::SFixed32),
         ("rpc", TokenKind::Rpc),
         ("string", TokenKind::String),
@@ -113,7 +113,7 @@ fn get_keyword_token_kind<'a>(text: &'a str) -> Option<TokenKind<'a>> {
     ];
     match TABLE
         .into_iter()
-        .find(|(keyword_string, kind)| *keyword_string == text)
+        .find(|(keyword_string, _)| *keyword_string == text)
     {
         Some((_, kind)) => Some(kind),
         None => None,
@@ -138,18 +138,18 @@ impl From<Radix> for u32 {
 }
 
 pub struct Token<'storage> {
-    kind: TokenKind<'storage>,
-    line_number: usize,  // 1 based line number
-    column_index: usize, // 1 based column index
+    pub kind: TokenKind<'storage>,
+    pub line_number: usize,  // 1 based line number
+    pub column_index: usize, // 1 based column index
 }
 
-struct Span {
+pub struct Span {
     start: usize,
     end: usize,
 }
 
+#[derive(Clone)]
 struct Cursor<'source> {
-    source_text: &'source str,
     iter: Chars<'source>,
     number_of_chars_consumed: usize,
 }
@@ -176,7 +176,6 @@ impl Span {
 impl<'source> Cursor<'source> {
     fn new(source_text: &'source str) -> Self {
         Self {
-            source_text: source_text,
             iter: source_text.chars(),
             number_of_chars_consumed: 0,
         }
@@ -196,13 +195,6 @@ impl<'source> Cursor<'source> {
         self.number_of_chars_consumed
     }
 
-    fn is_at_end(&self) -> bool {
-        match self.peek() {
-            Some(_) => false,
-            None => true,
-        }
-    }
-
     fn peek(&self) -> Option<char> {
         self.iter.clone().next()
     }
@@ -219,6 +211,7 @@ impl<'source> Cursor<'source> {
     }
 }
 
+#[derive(Clone)]
 struct Lexer<'storage> {
     source_text: &'storage str,
     cursor: Cursor<'storage>,
@@ -1375,5 +1368,174 @@ mod tests {
                 _ => assert!(false),
             }
         }
+    }
+
+    #[test]
+    fn test_identifier() {
+        let mut lexer = Lexer::new("_test_variable1 test_variable2");
+        let result = lexer.next();
+        assert!(result.is_some());
+        let token = result.unwrap();
+        match token.kind {
+            TokenKind::Identifier(value) => {
+                assert!(value == "_test_variable1")
+            }
+            _ => assert!(false),
+        }
+
+        let result = lexer.next();
+        assert!(result.is_some());
+        let token = result.unwrap();
+        match token.kind {
+            TokenKind::Identifier(value) => {
+                assert!(value == "test_variable2")
+            }
+            _ => assert!(false),
+        }
+    }
+
+    #[test]
+    fn test_keywords() {
+        let source_text = r#"
+        import
+        syntax
+        bool
+        to
+        oneOf
+        float
+        double
+        map
+        weak
+        int32
+        extensions
+        public
+        int64
+        package
+        uint32
+        max
+        option
+        uint64
+        reserved
+        inf
+        sint32
+        enum
+        repeated
+        sint64
+        message
+        optional
+        fixed32
+        extend
+        required
+        fixed64
+        service
+        sfixed32
+        rpc
+        string
+        sfixed64
+        stream
+        bytes
+        group
+        returns
+        "#;
+        // Intentionally creating a separate mapping compared to the implementation
+        fn get_keyword_token_kind<'a>(text: &'a str) -> Option<TokenKind<'a>> {
+            const TABLE: [(&str, TokenKind); 39] = [
+                ("import", TokenKind::Import),
+                ("syntax", TokenKind::Syntax),
+                ("bool", TokenKind::Bool),
+                ("to", TokenKind::To),
+                ("oneOf", TokenKind::OneOf),
+                ("float", TokenKind::Float),
+                ("double", TokenKind::Double),
+                ("map", TokenKind::Map),
+                ("weak", TokenKind::Weak),
+                ("int32", TokenKind::Int32),
+                ("extensions", TokenKind::Extensions),
+                ("public", TokenKind::Public),
+                ("int64", TokenKind::Int64),
+                ("package", TokenKind::Package),
+                ("uint32", TokenKind::Uint32),
+                ("max", TokenKind::Max),
+                ("option", TokenKind::Option),
+                ("uint64", TokenKind::Uint64),
+                ("reserved", TokenKind::Reserved),
+                ("inf", TokenKind::Inf),
+                ("sint32", TokenKind::Sint32),
+                ("enum", TokenKind::Enum),
+                ("repeated", TokenKind::Repeated),
+                ("sint64", TokenKind::Sint64),
+                ("message", TokenKind::Message),
+                ("optional", TokenKind::Optional),
+                ("fixed32", TokenKind::Fixed32),
+                ("extend", TokenKind::Extend),
+                ("required", TokenKind::Required),
+                ("fixed64", TokenKind::Fixed64),
+                ("service", TokenKind::Service),
+                ("sfixed32", TokenKind::SFixed32),
+                ("rpc", TokenKind::Rpc),
+                ("string", TokenKind::String),
+                ("sfixed64", TokenKind::SFixed64),
+                ("stream", TokenKind::Stream),
+                ("bytes", TokenKind::Bytes),
+                ("group", TokenKind::Group),
+                ("returns", TokenKind::Returns),
+            ];
+            match TABLE
+                .into_iter()
+                .find(|(keyword_string, _)| *keyword_string == text)
+            {
+                Some((_, kind)) => Some(kind),
+                None => None,
+            }
+        }
+        let lexeme_text_vector: Vec<&str> = source_text.split_ascii_whitespace().collect();
+        let mut lexer = Lexer::new(source_text);
+        for keyword_text in lexeme_text_vector {
+            let result = lexer.next();
+            assert!(result.is_some());
+            let result_token_kind_from_lexer = result.unwrap().kind;
+            let expected_token_kind = get_keyword_token_kind(keyword_text).unwrap();
+            assert!(result_token_kind_from_lexer == expected_token_kind);
+        }
+    }
+
+    #[test]
+    fn test_actual_proto() {
+        let source_text = r#"
+        message Person {
+            optional string name = 1;
+            optional int32 id = 2;
+            optional string email = 3;
+        }
+        "#;
+        let expected_token_kinds = vec![
+            TokenKind::Message,
+            TokenKind::Identifier(YarnBox::new("Person")),
+            TokenKind::LBrace,
+            TokenKind::Optional,
+            TokenKind::String,
+            TokenKind::Identifier(YarnBox::new("name")),
+            TokenKind::Equals,
+            TokenKind::IntegerLiteral(1),
+            TokenKind::Semicolon,
+            TokenKind::Optional,
+            TokenKind::Int32,
+            TokenKind::Identifier(YarnBox::new("id")),
+            TokenKind::Equals,
+            TokenKind::IntegerLiteral(2),
+            TokenKind::Semicolon,
+            TokenKind::Optional,
+            TokenKind::String,
+            TokenKind::Identifier(YarnBox::new("email")),
+            TokenKind::Equals,
+            TokenKind::IntegerLiteral(3),
+            TokenKind::Semicolon,
+            TokenKind::RBrace,
+        ];
+        let actual_token_kinds: Vec<TokenKind> = Lexer::new(source_text)
+            .into_iter()
+            .map(|token| token.kind)
+            .collect();
+        assert!(expected_token_kinds == actual_token_kinds);
     }
 }
