@@ -137,13 +137,26 @@ impl From<Radix> for u32 {
     }
 }
 
-pub struct Token<'storage> {
-    pub kind: TokenKind<'storage>,
-    pub line_number: usize,  // 1 based line number
-    pub column_index: usize, // 1 based column index
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LineInfo {
+    line_start_offset_into_source: usize,
+    line_number: usize,
+    column_number: usize,
+}
+#[derive(Debug, Clone)]
+pub struct TokenMetadata {
+    span: Span,
+    line_info: LineInfo,
 }
 
-pub struct Span {
+#[derive(Debug, Clone)]
+pub struct Token<'storage> {
+    pub kind: TokenKind<'storage>,
+    pub metadata: TokenMetadata,
+}
+
+#[derive(Debug, Clone)]
+struct Span {
     start: usize,
     end: usize,
 }
@@ -233,6 +246,49 @@ impl<'storage> Lexer<'storage> {
         }
     }
 
+    fn get_token_line(&self, metadata: &TokenMetadata) -> String {
+        let line_start = metadata.line_info.line_start_offset_into_source;
+        let offset = self.source_text[line_start + 1..].find('\n');
+        if let Some(offset) = offset {
+            format!("{}", &self.source_text[line_start..line_start + offset + 1])
+        } else {
+            format!("{}", &self.source_text[line_start..])
+        }
+    }
+
+    pub fn print_token_in_line(&self, metadata: &TokenMetadata) {
+        println!(
+            "Line {}:{}",
+            metadata.line_info.line_number, metadata.line_info.column_number
+        );
+        println!("{}", self.get_token_line(metadata));
+        for _ in 0..metadata.line_info.column_number - 2 {
+            print!(" ");
+        }
+        print!("↑");
+        if metadata.span.len() > 1 {
+            for _ in metadata.line_info.column_number
+                ..(metadata.line_info.column_number - 2 + metadata.span.len())
+            {
+                print!(" ");
+            }
+            println!("↑");
+        } else {
+            println!("");
+        }
+    }
+
+    fn get_token_metadata(&self, span: Span) -> TokenMetadata {
+        TokenMetadata {
+            span: span.clone(),
+            line_info: LineInfo {
+                line_start_offset_into_source: self.current_line_start_char_offset,
+                line_number: self.current_line_number,
+                column_number: self.current_line_column - span.len() + 1,
+            },
+        }
+    }
+
     fn identifier_or_keyword(&mut self, header: char) -> Option<Token<'storage>> {
         debug_assert!(header.is_alphabetic() || header == '_');
         let start = self.cursor.get_current_index() - 1;
@@ -252,14 +308,12 @@ impl<'storage> Lexer<'storage> {
         if let Some(keyword) = get_keyword_token_kind(idententifier_or_keyword) {
             return Some(Token {
                 kind: keyword,
-                line_number: self.current_line_number,
-                column_index: self.current_line_column,
+                metadata: self.get_token_metadata(Span { start, end }),
             });
         }
         return Some(Token {
             kind: TokenKind::Identifier(YarnBox::from(idententifier_or_keyword)),
-            line_number: self.current_line_number,
-            column_index: self.current_line_column,
+            metadata: self.get_token_metadata(Span { start, end }),
         });
     }
 
@@ -428,14 +482,17 @@ impl<'storage> Lexer<'storage> {
         // Note: At this point we've already consumed 1 character of the numeric literal from the cursor
         // The various components of a numeric literal:
         // [radix] int_part [. fract_part [[ep] [+-] exponent_part]]
+        let start = self.cursor.get_current_index() - 1;
         let radix = self.determine_radix(header);
         let integral_part = match self.extract_integral_part(header, radix) {
             Ok(integral_part) => integral_part,
             Err(err) => {
                 return Some(Token {
                     kind: self.get_error_token(err.to_string().as_str()),
-                    line_number: self.current_line_number,
-                    column_index: self.current_line_column,
+                    metadata: self.get_token_metadata(Span {
+                        start,
+                        end: self.cursor.get_current_index(),
+                    }),
                 });
             }
         };
@@ -445,8 +502,10 @@ impl<'storage> Lexer<'storage> {
             Err(err) => {
                 return Some(Token {
                     kind: self.get_error_token(err.to_string().as_str()),
-                    line_number: self.current_line_number,
-                    column_index: self.current_line_column,
+                    metadata: self.get_token_metadata(Span {
+                        start,
+                        end: self.cursor.get_current_index(),
+                    }),
                 });
             }
         };
@@ -460,8 +519,10 @@ impl<'storage> Lexer<'storage> {
                     Err(err) => {
                         return Some(Token {
                             kind: self.get_error_token(err.to_string().as_str()),
-                            line_number: self.current_line_number,
-                            column_index: self.current_line_column,
+                            metadata: self.get_token_metadata(Span {
+                                start,
+                                end: self.cursor.get_current_index(),
+                            }),
                         });
                     }
                 }
@@ -472,8 +533,10 @@ impl<'storage> Lexer<'storage> {
         if fractional_part.is_empty() && exponent_part.is_empty() && !integral_part.is_empty() {
             return Some(Token {
                 kind: TokenKind::IntegerLiteral(integral_value),
-                line_number: self.current_line_number,
-                column_index: self.current_line_column,
+                metadata: self.get_token_metadata(Span {
+                    start,
+                    end: self.cursor.get_current_index(),
+                }),
             });
         }
         let mut floating_point_number = integral_value as f64;
@@ -486,8 +549,10 @@ impl<'storage> Lexer<'storage> {
                     Err(err) => {
                         return Some(Token {
                             kind: self.get_error_token(err.to_string().as_str()),
-                            line_number: self.current_line_number,
-                            column_index: self.current_line_column,
+                            metadata: self.get_token_metadata(Span {
+                                start,
+                                end: self.cursor.get_current_index(),
+                            }),
                         });
                     }
                 }
@@ -497,8 +562,10 @@ impl<'storage> Lexer<'storage> {
         if exponent_part.is_empty() {
             return Some(Token {
                 kind: TokenKind::FloatLiteral(floating_point_number),
-                line_number: self.current_line_number,
-                column_index: self.current_line_column,
+                metadata: self.get_token_metadata(Span {
+                    start,
+                    end: self.cursor.get_current_index(),
+                }),
             });
         }
 
@@ -508,8 +575,10 @@ impl<'storage> Lexer<'storage> {
                 Err(err) => {
                     return Some(Token {
                         kind: self.get_error_token(err.to_string().as_str()),
-                        line_number: self.current_line_number,
-                        column_index: self.current_line_column,
+                        metadata: self.get_token_metadata(Span {
+                            start,
+                            end: self.cursor.get_current_index(),
+                        }),
                     });
                 }
             }
@@ -519,8 +588,10 @@ impl<'storage> Lexer<'storage> {
 
         return Some(Token {
             kind: TokenKind::FloatLiteral(floating_point_number),
-            line_number: self.current_line_number,
-            column_index: self.current_line_column,
+            metadata: self.get_token_metadata(Span {
+                start,
+                end: self.cursor.get_current_index(),
+            }),
         });
     }
 
@@ -535,15 +606,19 @@ impl<'storage> Lexer<'storage> {
                     '\n' => {
                         return Some(Token {
                             kind: self.get_error_token("Unterminated string literal"),
-                            line_number: self.current_line_number,
-                            column_index: self.current_line_column,
+                            metadata: self.get_token_metadata(Span {
+                                start: string_literal_start_index,
+                                end: self.cursor.get_current_index(),
+                            }),
                         });
                     }
                     '\x00' => {
                         return Some(Token {
                             kind: self.get_error_token("Unterminated string literal"),
-                            line_number: self.current_line_number,
-                            column_index: self.current_line_column,
+                            metadata: self.get_token_metadata(Span {
+                                start: string_literal_start_index,
+                                end: self.cursor.get_current_index(),
+                            }),
                         });
                     }
                     '\\' => {
@@ -559,8 +634,10 @@ impl<'storage> Lexer<'storage> {
                             return Some(Token {
                                 kind: self
                                     .get_error_token("Invalid escape sequence in string literal"),
-                                line_number: self.current_line_number,
-                                column_index: self.current_line_column,
+                                metadata: self.get_token_metadata(Span {
+                                    start: string_literal_start_index,
+                                    end: self.cursor.get_current_index(),
+                                }),
                             });
                         }
                     }
@@ -571,8 +648,10 @@ impl<'storage> Lexer<'storage> {
                                 kind: TokenKind::StringLiteral(YarnBox::from_string(
                                     escaped_sequence,
                                 )),
-                                line_number: self.current_line_number,
-                                column_index: self.current_line_column,
+                                metadata: self.get_token_metadata(Span {
+                                    start: string_literal_start_index,
+                                    end: self.cursor.get_current_index(),
+                                }),
                             });
                         } else {
                             return Some(Token {
@@ -580,8 +659,10 @@ impl<'storage> Lexer<'storage> {
                                     &self.source_text[string_literal_start_index
                                         ..self.cursor.get_current_index() - 1],
                                 )),
-                                line_number: self.current_line_number,
-                                column_index: self.current_line_column,
+                                metadata: self.get_token_metadata(Span {
+                                    start: string_literal_start_index,
+                                    end: self.cursor.get_current_index(),
+                                }),
                             });
                         }
                     }
@@ -595,8 +676,10 @@ impl<'storage> Lexer<'storage> {
             } else {
                 return Some(Token {
                     kind: self.get_error_token("Unterminated string literal"),
-                    line_number: self.current_line_number,
-                    column_index: self.current_line_column,
+                    metadata: self.get_token_metadata(Span {
+                        start: string_literal_start_index,
+                        end: self.cursor.get_current_index(),
+                    }),
                 });
             }
         }
@@ -609,57 +692,73 @@ impl<'storage> Lexer<'storage> {
                 ';' => {
                     return Some(Token {
                         kind: TokenKind::Semicolon,
-                        line_number: self.current_line_number,
-                        column_index: self.current_line_column,
+                        metadata: self.get_token_metadata(Span {
+                            start: self.cursor.get_current_index() - 1,
+                            end: self.cursor.get_current_index(),
+                        }),
                     })
                 }
                 ':' => {
                     return Some(Token {
                         kind: TokenKind::Colon,
-                        line_number: self.current_line_number,
-                        column_index: self.current_line_column,
+                        metadata: self.get_token_metadata(Span {
+                            start: self.cursor.get_current_index() - 1,
+                            end: self.cursor.get_current_index(),
+                        }),
                     })
                 }
                 '(' => {
                     return Some(Token {
                         kind: TokenKind::LParen,
-                        line_number: self.current_line_number,
-                        column_index: self.current_line_column,
+                        metadata: self.get_token_metadata(Span {
+                            start: self.cursor.get_current_index() - 1,
+                            end: self.cursor.get_current_index(),
+                        }),
                     })
                 }
                 '[' => {
                     return Some(Token {
                         kind: TokenKind::LBracket,
-                        line_number: self.current_line_number,
-                        column_index: self.current_line_column,
+                        metadata: self.get_token_metadata(Span {
+                            start: self.cursor.get_current_index() - 1,
+                            end: self.cursor.get_current_index(),
+                        }),
                     })
                 }
                 ',' => {
                     return Some(Token {
                         kind: TokenKind::Comma,
-                        line_number: self.current_line_number,
-                        column_index: self.current_line_column,
+                        metadata: self.get_token_metadata(Span {
+                            start: self.cursor.get_current_index() - 1,
+                            end: self.cursor.get_current_index(),
+                        }),
                     })
                 }
                 '=' => {
                     return Some(Token {
                         kind: TokenKind::Equals,
-                        line_number: self.current_line_number,
-                        column_index: self.current_line_column,
+                        metadata: self.get_token_metadata(Span {
+                            start: self.cursor.get_current_index() - 1,
+                            end: self.cursor.get_current_index(),
+                        }),
                     })
                 }
                 ')' => {
                     return Some(Token {
                         kind: TokenKind::RParen,
-                        line_number: self.current_line_number,
-                        column_index: self.current_line_column,
+                        metadata: self.get_token_metadata(Span {
+                            start: self.cursor.get_current_index() - 1,
+                            end: self.cursor.get_current_index(),
+                        }),
                     })
                 }
                 ']' => {
                     return Some(Token {
                         kind: TokenKind::RBracket,
-                        line_number: self.current_line_number,
-                        column_index: self.current_line_column,
+                        metadata: self.get_token_metadata(Span {
+                            start: self.cursor.get_current_index() - 1,
+                            end: self.cursor.get_current_index(),
+                        }),
                     })
                 }
                 '.' => {
@@ -670,57 +769,73 @@ impl<'storage> Lexer<'storage> {
                     }
                     return Some(Token {
                         kind: TokenKind::Dot,
-                        line_number: self.current_line_number,
-                        column_index: self.current_line_column,
+                        metadata: self.get_token_metadata(Span {
+                            start: self.cursor.get_current_index() - 1,
+                            end: self.cursor.get_current_index(),
+                        }),
                     });
                 }
                 '-' => {
                     return Some(Token {
                         kind: TokenKind::Minus,
-                        line_number: self.current_line_number,
-                        column_index: self.current_line_column,
+                        metadata: self.get_token_metadata(Span {
+                            start: self.cursor.get_current_index() - 1,
+                            end: self.cursor.get_current_index(),
+                        }),
                     })
                 }
                 '{' => {
                     return Some(Token {
                         kind: TokenKind::LBrace,
-                        line_number: self.current_line_number,
-                        column_index: self.current_line_column,
+                        metadata: self.get_token_metadata(Span {
+                            start: self.cursor.get_current_index() - 1,
+                            end: self.cursor.get_current_index(),
+                        }),
                     })
                 }
                 '<' => {
                     return Some(Token {
                         kind: TokenKind::LAngle,
-                        line_number: self.current_line_number,
-                        column_index: self.current_line_column,
+                        metadata: self.get_token_metadata(Span {
+                            start: self.cursor.get_current_index() - 1,
+                            end: self.cursor.get_current_index(),
+                        }),
                     })
                 }
                 '/' => {
                     return Some(Token {
                         kind: TokenKind::Slash,
-                        line_number: self.current_line_number,
-                        column_index: self.current_line_column,
+                        metadata: self.get_token_metadata(Span {
+                            start: self.cursor.get_current_index() - 1,
+                            end: self.cursor.get_current_index(),
+                        }),
                     });
                 }
                 '+' => {
                     return Some(Token {
                         kind: TokenKind::Plus,
-                        line_number: self.current_line_number,
-                        column_index: self.current_line_column,
+                        metadata: self.get_token_metadata(Span {
+                            start: self.cursor.get_current_index() - 1,
+                            end: self.cursor.get_current_index(),
+                        }),
                     })
                 }
                 '}' => {
                     return Some(Token {
                         kind: TokenKind::RBrace,
-                        line_number: self.current_line_number,
-                        column_index: self.current_line_column,
+                        metadata: self.get_token_metadata(Span {
+                            start: self.cursor.get_current_index() - 1,
+                            end: self.cursor.get_current_index(),
+                        }),
                     })
                 }
                 '>' => {
                     return Some(Token {
                         kind: TokenKind::RAngle,
-                        line_number: self.current_line_number,
-                        column_index: self.current_line_column,
+                        metadata: self.get_token_metadata(Span {
+                            start: self.cursor.get_current_index() - 1,
+                            end: self.cursor.get_current_index(),
+                        }),
                     })
                 }
                 '\'' | '"' => return self.string_literal(ch),
@@ -729,8 +844,10 @@ impl<'storage> Lexer<'storage> {
                 _ => {
                     return Some(Token {
                         kind: self.get_error_token("Unknown character"),
-                        line_number: self.current_line_number,
-                        column_index: self.current_line_column,
+                        metadata: self.get_token_metadata(Span {
+                            start: self.cursor.get_current_index() - 1,
+                            end: self.cursor.get_current_index(),
+                        }),
                     })
                 }
             }
@@ -794,11 +911,11 @@ impl<'storage> Lexer<'storage> {
 
     fn next_char(&mut self) -> Option<char> {
         match self.cursor.next_with_index() {
-            Some((index, ch)) => {
+            Some((_, ch)) => {
                 if ch == '\n' {
                     self.current_line_number += 1;
                     self.current_line_column = 1;
-                    self.current_line_start_char_offset = index + 1;
+                    self.current_line_start_char_offset = self.cursor.get_current_index();
                 } else if ch == '\t' {
                     self.current_line_column += 4;
                 } else {
@@ -1508,5 +1625,20 @@ mod tests {
             .map(|token| token.kind)
             .collect();
         assert!(expected_token_kinds == actual_token_kinds);
+    }
+    #[test]
+    fn test_token_metadata() {
+        let source_text = r#"
+        message Person {
+            optional string name = 1;
+            optional int32 id = 2;
+            optional string email = 3;
+        }
+        "#;
+        let lexer = Lexer::new(source_text);
+        let tokens: Vec<Token> = lexer.clone().collect();
+        for token in tokens {
+            lexer.print_token_in_line(&token.metadata);
+        }
     }
 }
