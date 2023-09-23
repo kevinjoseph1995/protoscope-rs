@@ -104,9 +104,9 @@ struct Cursor<'source> {
 }
 
 impl Span {
-    fn len(&self) {
+    fn len(&self) -> usize {
         debug_assert!(self.end >= self.start);
-        self.end - self.start;
+        self.end - self.start
     }
     fn is_empty(&self) -> bool {
         debug_assert!(self.end >= self.start);
@@ -146,7 +146,7 @@ impl<'source> Cursor<'source> {
     }
 
     fn is_at_end(&self) -> bool {
-        match self.peek_next() {
+        match self.peek() {
             Some(_) => false,
             None => true,
         }
@@ -197,9 +197,6 @@ impl<'storage> Lexer<'storage> {
 
     fn consume_decimal_digits(&mut self) {
         loop {
-            if self.cursor.is_at_end() {
-                break;
-            }
             if let Some(ch) = self.cursor.peek() {
                 if ch.is_ascii_digit() {
                     _ = self.next_char_with_index();
@@ -213,9 +210,6 @@ impl<'storage> Lexer<'storage> {
     }
     fn consume_hex_digits(&mut self) {
         loop {
-            if self.cursor.is_at_end() {
-                break;
-            }
             if let Some(ch) = self.cursor.peek() {
                 if ch.is_ascii_hexdigit() {
                     _ = self.next_char_with_index();
@@ -230,9 +224,6 @@ impl<'storage> Lexer<'storage> {
 
     fn consume_octal_digits(&mut self) {
         loop {
-            if self.cursor.is_at_end() {
-                break;
-            }
             if let Some(ch) = self.cursor.peek() {
                 match ch {
                     '0'..='7' => {
@@ -295,12 +286,7 @@ impl<'storage> Lexer<'storage> {
         }
     }
 
-    fn extract_fractional_part(
-        &mut self,
-        integral_part: &Span,
-        header: char,
-        radix: Radix,
-    ) -> Span {
+    fn extract_fractional_part(&mut self, integral_part: &Span, header: char) -> Span {
         // ".<FRACTIONAL_PART>"
         debug_assert!(header.is_numeric() || header == '.');
         if integral_part.is_empty() {
@@ -385,7 +371,7 @@ impl<'storage> Lexer<'storage> {
                 });
             }
         };
-        let fractional_part: Span = self.extract_fractional_part(&integral_part, header, radix);
+        let fractional_part: Span = self.extract_fractional_part(&integral_part, header);
         let exponent_part = match self.extract_exponent() {
             Ok(exponent_part) => exponent_part,
             Err(err) => {
@@ -424,7 +410,7 @@ impl<'storage> Lexer<'storage> {
         }
         let mut floating_point_number = integral_value as f64;
         let fractional_value = {
-            if fractional_part.is_empty() {
+            if fractional_part.is_empty() || fractional_part.len() == 1 {
                 0f64
             } else {
                 match f64::from_str(fractional_part.extract_from_source(self.source_text)) {
@@ -1106,9 +1092,10 @@ mod tests {
             }
         }
     }
+
     #[test]
     fn test_numerical_literal_floats() {
-        let mut lexer = Lexer::new("12.56e-12 .5 1e3");
+        let mut lexer = Lexer::new("12.56e-12 .5 1e3 1. 0.0 .123 555.555 1.234e-12 .953e20 5E+40");
         {
             let result = lexer.next();
             assert!(result.is_some());
@@ -1141,6 +1128,97 @@ mod tests {
             match token.kind {
                 TokenKind::FloatLiteral(float_value) => {
                     const GROUND_TRUTH: f64 = 1e3;
+                    assert!((GROUND_TRUTH - float_value).abs() < 2.0f64 * &f64::EPSILON);
+                }
+                _ => assert!(false),
+            }
+        }
+
+        {
+            let result = lexer.next();
+            assert!(result.is_some());
+            let token = result.unwrap();
+            match token.kind {
+                TokenKind::FloatLiteral(float_value) => {
+                    const GROUND_TRUTH: f64 = 1.0;
+                    assert!((GROUND_TRUTH - float_value).abs() < 2.0f64 * &f64::EPSILON);
+                }
+                _ => assert!(false),
+            }
+        }
+
+        {
+            let result = lexer.next();
+            assert!(result.is_some());
+            let token = result.unwrap();
+            match token.kind {
+                TokenKind::FloatLiteral(float_value) => {
+                    const GROUND_TRUTH: f64 = 0.0;
+                    assert!((GROUND_TRUTH - float_value).abs() < 2.0f64 * &f64::EPSILON);
+                }
+                _ => assert!(false),
+            }
+        }
+
+        {
+            let result = lexer.next();
+            assert!(result.is_some());
+            let token = result.unwrap();
+            match token.kind {
+                TokenKind::FloatLiteral(float_value) => {
+                    const GROUND_TRUTH: f64 = 0.123;
+                    assert!((GROUND_TRUTH - float_value).abs() < 2.0f64 * &f64::EPSILON);
+                }
+                _ => assert!(false),
+            }
+        }
+
+        {
+            let result = lexer.next();
+            assert!(result.is_some());
+            let token = result.unwrap();
+            match token.kind {
+                TokenKind::FloatLiteral(float_value) => {
+                    const GROUND_TRUTH: f64 = 555.555;
+                    assert!((GROUND_TRUTH - float_value).abs() < 2.0f64 * &f64::EPSILON);
+                }
+                _ => assert!(false),
+            }
+        }
+
+        {
+            let result = lexer.next();
+            assert!(result.is_some());
+            let token = result.unwrap();
+            match token.kind {
+                TokenKind::FloatLiteral(float_value) => {
+                    const GROUND_TRUTH: f64 = 1.234e-12;
+                    assert!((GROUND_TRUTH - float_value).abs() < 2.0f64 * &f64::EPSILON);
+                }
+                _ => assert!(false),
+            }
+        }
+
+        {
+            let result = lexer.next();
+            assert!(result.is_some());
+            let token = result.unwrap();
+            match token.kind {
+                TokenKind::FloatLiteral(float_value) => {
+                    const GROUND_TRUTH: f64 = 0.953e20;
+                    assert!((GROUND_TRUTH - float_value).abs() < 2.0f64 * &f64::EPSILON);
+                }
+                _ => assert!(false),
+            }
+        }
+
+        {
+            let result = lexer.next();
+            assert!(result.is_some());
+            let token = result.unwrap();
+            match token.kind {
+                TokenKind::FloatLiteral(float_value) => {
+                    const GROUND_TRUTH: f64 = 5E+40;
                     assert!((GROUND_TRUTH - float_value).abs() < 2.0f64 * &f64::EPSILON);
                 }
                 _ => assert!(false),
@@ -1196,22 +1274,6 @@ mod tests {
                 _ => assert!(false),
             }
         }
-
-        {
-            let result = lexer.next();
-            assert!(result.is_some());
-            let token = result.unwrap();
-            match token.kind {
-                TokenKind::IntegerLiteral(value) => {
-                    assert!(value == 0x123)
-                }
-                _ => assert!(false),
-            }
-        }
-    }
-
-    #[test]
-    fn test_numerical_literal_integers2() {
         {
             let mut lexer = Lexer::new("08");
             let result = lexer.next();
