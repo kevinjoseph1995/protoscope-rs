@@ -69,6 +69,57 @@ pub enum TokenKind<'storage> {
     Error(String),
 }
 
+fn get_keyword_token_kind<'a>(text: &'a str) -> Option<TokenKind<'a>> {
+    const TABLE: [(&str, TokenKind); 39] = [
+        ("syntax", TokenKind::Syntax),
+        ("float", TokenKind::Float),
+        ("oneOf", TokenKind::OneOf),
+        ("import", TokenKind::Import),
+        ("double", TokenKind::Double),
+        ("map", TokenKind::Map),
+        ("weak", TokenKind::Weak),
+        ("int32", TokenKind::Int32),
+        ("extensions", TokenKind::Extensions),
+        ("public", TokenKind::Public),
+        ("int64", TokenKind::Int64),
+        ("to", TokenKind::To),
+        ("package", TokenKind::Package),
+        ("uint32", TokenKind::Uint32),
+        ("max", TokenKind::Max),
+        ("option", TokenKind::Option),
+        ("uint64", TokenKind::Uint64),
+        ("reserved", TokenKind::Reserved),
+        ("inf", TokenKind::Inf),
+        ("sint32", TokenKind::Sint32),
+        ("enum", TokenKind::Enum),
+        ("repeated", TokenKind::Repeated),
+        ("sint64", TokenKind::Sint64),
+        ("message", TokenKind::Message),
+        ("optional", TokenKind::Optional),
+        ("fixed32", TokenKind::Fixed32),
+        ("extend", TokenKind::Extend),
+        ("required", TokenKind::Required),
+        ("fixed64", TokenKind::Fixed64),
+        ("service", TokenKind::Service),
+        ("bool", TokenKind::Bool),
+        ("sfixed32", TokenKind::SFixed32),
+        ("rpc", TokenKind::Rpc),
+        ("string", TokenKind::String),
+        ("sfixed64", TokenKind::SFixed64),
+        ("stream", TokenKind::Stream),
+        ("bytes", TokenKind::Bytes),
+        ("group", TokenKind::Group),
+        ("returns", TokenKind::Returns),
+    ];
+    match TABLE
+        .into_iter()
+        .find(|(keyword_string, kind)| *keyword_string == text)
+    {
+        Some((_, kind)) => Some(kind),
+        None => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Radix {
     Decimal,
@@ -191,8 +242,34 @@ impl<'storage> Lexer<'storage> {
         }
     }
 
-    fn identifier_or_keyword(&mut self) -> Option<Token<'storage>> {
-        todo!()
+    fn identifier_or_keyword(&mut self, header: char) -> Option<Token<'storage>> {
+        debug_assert!(header.is_alphabetic() || header == '_');
+        let start = self.cursor.get_current_index() - 1;
+        loop {
+            if let Some(ch) = self.cursor.peek() {
+                if ch.is_alphanumeric() || ch == '_' {
+                    _ = self.next_char_with_index();
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        let end = self.cursor.get_current_index();
+        let idententifier_or_keyword = &self.source_text[start..end];
+        if let Some(keyword) = get_keyword_token_kind(idententifier_or_keyword) {
+            return Some(Token {
+                kind: keyword,
+                line_number: self.current_line_number,
+                column_index: self.current_line_column,
+            });
+        }
+        return Some(Token {
+            kind: TokenKind::Identifier(YarnBox::from(idententifier_or_keyword)),
+            line_number: self.current_line_number,
+            column_index: self.current_line_column,
+        });
     }
 
     fn consume_decimal_digits(&mut self) {
@@ -677,7 +754,7 @@ impl<'storage> Lexer<'storage> {
                 }
                 '\'' | '"' => return self.string_literal(ch),
                 '0'..='9' => return self.numeric_literal(ch),
-                'a'..='z' | 'A'..='Z' | '_' => return self.identifier_or_keyword(),
+                'a'..='z' | 'A'..='Z' | '_' => return self.identifier_or_keyword(ch),
                 _ => {
                     return Some(Token {
                         kind: self.get_error_token(
