@@ -5,7 +5,7 @@ use std::str::FromStr;
 
 use byteyarn::YarnBox;
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq)]
 pub enum TokenKind<'storage> {
     Identifier(YarnBox<'storage, str>),
     IntegerLiteral(u64),
@@ -69,163 +69,20 @@ pub enum TokenKind<'storage> {
     Error(String), /*TODO Add more information here for better diagnostics */
 }
 
-fn get_keyword_token_kind<'a>(text: &'a str) -> Option<TokenKind<'a>> {
-    const TABLE: [(&str, TokenKind); 39] = [
-        ("import", TokenKind::Import),
-        ("syntax", TokenKind::Syntax),
-        ("bool", TokenKind::Bool),
-        ("to", TokenKind::To),
-        ("oneOf", TokenKind::OneOf),
-        ("float", TokenKind::Float),
-        ("double", TokenKind::Double),
-        ("map", TokenKind::Map),
-        ("weak", TokenKind::Weak),
-        ("int32", TokenKind::Int32),
-        ("extensions", TokenKind::Extensions),
-        ("public", TokenKind::Public),
-        ("int64", TokenKind::Int64),
-        ("package", TokenKind::Package),
-        ("uint32", TokenKind::Uint32),
-        ("max", TokenKind::Max),
-        ("option", TokenKind::Option),
-        ("uint64", TokenKind::Uint64),
-        ("reserved", TokenKind::Reserved),
-        ("inf", TokenKind::Inf),
-        ("sint32", TokenKind::Sint32),
-        ("enum", TokenKind::Enum),
-        ("repeated", TokenKind::Repeated),
-        ("sint64", TokenKind::Sint64),
-        ("message", TokenKind::Message),
-        ("optional", TokenKind::Optional),
-        ("fixed32", TokenKind::Fixed32),
-        ("extend", TokenKind::Extend),
-        ("required", TokenKind::Required),
-        ("fixed64", TokenKind::Fixed64),
-        ("service", TokenKind::Service),
-        ("sfixed32", TokenKind::SFixed32),
-        ("rpc", TokenKind::Rpc),
-        ("string", TokenKind::String),
-        ("sfixed64", TokenKind::SFixed64),
-        ("stream", TokenKind::Stream),
-        ("bytes", TokenKind::Bytes),
-        ("group", TokenKind::Group),
-        ("returns", TokenKind::Returns),
-    ];
-    match TABLE
-        .into_iter()
-        .find(|(keyword_string, _)| *keyword_string == text)
-    {
-        Some((_, kind)) => Some(kind),
-        None => None,
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum Radix {
-    Decimal,
-    Hexadecimal,
-    Octal,
-}
-
-impl From<Radix> for u32 {
-    fn from(value: Radix) -> Self {
-        match value {
-            Radix::Decimal => 10,
-            Radix::Hexadecimal => 16,
-            Radix::Octal => 8,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct LineInfo {
-    line_start_offset_into_source: usize,
-    line_number: usize,
-    column_number: usize,
-}
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TokenMetadata {
     span: Span,
     line_info: LineInfo,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Token<'storage> {
     pub kind: TokenKind<'storage>,
     pub metadata: TokenMetadata,
 }
 
-#[derive(Debug, Clone)]
-struct Span {
-    start: usize,
-    end: usize,
-}
-
 #[derive(Clone)]
-struct Cursor<'source> {
-    iter: Chars<'source>,
-    number_of_chars_consumed: usize,
-}
-
-impl Span {
-    fn len(&self) -> usize {
-        debug_assert!(self.end >= self.start);
-        self.end - self.start
-    }
-    fn is_empty(&self) -> bool {
-        debug_assert!(self.end >= self.start);
-        self.end == self.start
-    }
-    fn extract_from_source<'a>(&self, source: &'a str) -> &'a str {
-        debug_assert!(self.end >= self.start);
-        if self.is_empty() {
-            ""
-        } else {
-            &source[self.start..self.end]
-        }
-    }
-}
-
-impl<'source> Cursor<'source> {
-    fn new(source_text: &'source str) -> Self {
-        Self {
-            iter: source_text.chars(),
-            number_of_chars_consumed: 0,
-        }
-    }
-
-    fn next_with_index(&mut self) -> Option<(usize, char)> {
-        if let Some(ch) = self.iter.next() {
-            let index = self.number_of_chars_consumed;
-            self.number_of_chars_consumed += 1;
-            Some((index, ch))
-        } else {
-            None
-        }
-    }
-
-    fn get_current_index(&self) -> usize {
-        self.number_of_chars_consumed
-    }
-
-    fn peek(&self) -> Option<char> {
-        self.iter.clone().next()
-    }
-
-    fn peek_next(&self) -> Option<char> {
-        let mut iter = self.iter.clone();
-        match iter.next() {
-            Some(_) => match iter.next() {
-                Some(ch) => Some(ch),
-                None => None,
-            },
-            None => None,
-        }
-    }
-}
-
-#[derive(Clone)]
-struct Lexer<'storage> {
+pub struct Lexer<'storage> {
     source_text: &'storage str,
     cursor: Cursor<'storage>,
     current_line_column: usize,
@@ -235,6 +92,7 @@ struct Lexer<'storage> {
 }
 
 impl<'storage> Lexer<'storage> {
+    /// Create a lexer to generate tokens for the provided source text
     pub fn new(source_text: &'storage str) -> Self {
         Lexer {
             source_text,
@@ -246,16 +104,7 @@ impl<'storage> Lexer<'storage> {
         }
     }
 
-    fn get_token_line(&self, metadata: &TokenMetadata) -> String {
-        let line_start = metadata.line_info.line_start_offset_into_source;
-        let offset = self.source_text[line_start + 1..].find('\n');
-        if let Some(offset) = offset {
-            format!("{}", &self.source_text[line_start..line_start + offset + 1])
-        } else {
-            format!("{}", &self.source_text[line_start..])
-        }
-    }
-
+    /// Print the token in the context of the line it's part of in the source text
     pub fn print_token_in_line(&self, metadata: &TokenMetadata) {
         println!(
             "Line {}:{}",
@@ -275,6 +124,16 @@ impl<'storage> Lexer<'storage> {
             println!("↑");
         } else {
             println!("");
+        }
+    }
+
+    fn get_token_line(&self, metadata: &TokenMetadata) -> String {
+        let line_start = metadata.line_info.line_start_offset_into_source;
+        let offset = self.source_text[line_start + 1..].find('\n');
+        if let Some(offset) = offset {
+            format!("{}", &self.source_text[line_start..line_start + offset + 1])
+        } else {
+            format!("{}", &self.source_text[line_start..])
         }
     }
 
@@ -1112,6 +971,150 @@ fn is_whitespace(ch: char) -> bool {
         '\x0c' => true, // Form-feed
         '\x0b' => true, // Vertical-tab
         _ => false,
+    }
+}
+
+fn get_keyword_token_kind<'a>(text: &'a str) -> Option<TokenKind<'a>> {
+    const TABLE: [(&str, TokenKind); 39] = [
+        ("import", TokenKind::Import),
+        ("syntax", TokenKind::Syntax),
+        ("bool", TokenKind::Bool),
+        ("to", TokenKind::To),
+        ("oneOf", TokenKind::OneOf),
+        ("float", TokenKind::Float),
+        ("double", TokenKind::Double),
+        ("map", TokenKind::Map),
+        ("weak", TokenKind::Weak),
+        ("int32", TokenKind::Int32),
+        ("extensions", TokenKind::Extensions),
+        ("public", TokenKind::Public),
+        ("int64", TokenKind::Int64),
+        ("package", TokenKind::Package),
+        ("uint32", TokenKind::Uint32),
+        ("max", TokenKind::Max),
+        ("option", TokenKind::Option),
+        ("uint64", TokenKind::Uint64),
+        ("reserved", TokenKind::Reserved),
+        ("inf", TokenKind::Inf),
+        ("sint32", TokenKind::Sint32),
+        ("enum", TokenKind::Enum),
+        ("repeated", TokenKind::Repeated),
+        ("sint64", TokenKind::Sint64),
+        ("message", TokenKind::Message),
+        ("optional", TokenKind::Optional),
+        ("fixed32", TokenKind::Fixed32),
+        ("extend", TokenKind::Extend),
+        ("required", TokenKind::Required),
+        ("fixed64", TokenKind::Fixed64),
+        ("service", TokenKind::Service),
+        ("sfixed32", TokenKind::SFixed32),
+        ("rpc", TokenKind::Rpc),
+        ("string", TokenKind::String),
+        ("sfixed64", TokenKind::SFixed64),
+        ("stream", TokenKind::Stream),
+        ("bytes", TokenKind::Bytes),
+        ("group", TokenKind::Group),
+        ("returns", TokenKind::Returns),
+    ];
+    match TABLE
+        .into_iter()
+        .find(|(keyword_string, _)| *keyword_string == text)
+    {
+        Some((_, kind)) => Some(kind),
+        None => None,
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Radix {
+    Decimal,
+    Hexadecimal,
+    Octal,
+}
+
+impl From<Radix> for u32 {
+    fn from(value: Radix) -> Self {
+        match value {
+            Radix::Decimal => 10,
+            Radix::Hexadecimal => 16,
+            Radix::Octal => 8,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct LineInfo {
+    line_start_offset_into_source: usize,
+    line_number: usize,
+    column_number: usize,
+}
+
+#[derive(Clone)]
+struct Span {
+    start: usize,
+    end: usize,
+}
+
+impl Span {
+    fn len(&self) -> usize {
+        debug_assert!(self.end >= self.start);
+        self.end - self.start
+    }
+    fn is_empty(&self) -> bool {
+        debug_assert!(self.end >= self.start);
+        self.end == self.start
+    }
+    fn extract_from_source<'a>(&self, source: &'a str) -> &'a str {
+        debug_assert!(self.end >= self.start);
+        if self.is_empty() {
+            ""
+        } else {
+            &source[self.start..self.end]
+        }
+    }
+}
+
+#[derive(Clone)]
+struct Cursor<'source> {
+    iter: Chars<'source>,
+    number_of_chars_consumed: usize,
+}
+
+impl<'source> Cursor<'source> {
+    fn new(source_text: &'source str) -> Self {
+        Self {
+            iter: source_text.chars(),
+            number_of_chars_consumed: 0,
+        }
+    }
+
+    fn next_with_index(&mut self) -> Option<(usize, char)> {
+        if let Some(ch) = self.iter.next() {
+            let index = self.number_of_chars_consumed;
+            self.number_of_chars_consumed += 1;
+            Some((index, ch))
+        } else {
+            None
+        }
+    }
+
+    fn get_current_index(&self) -> usize {
+        self.number_of_chars_consumed
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.iter.clone().next()
+    }
+
+    fn peek_next(&self) -> Option<char> {
+        let mut iter = self.iter.clone();
+        match iter.next() {
+            Some(_) => match iter.next() {
+                Some(ch) => Some(ch),
+                None => None,
+            },
+            None => None,
+        }
     }
 }
 
