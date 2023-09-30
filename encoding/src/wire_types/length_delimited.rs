@@ -11,7 +11,7 @@ fn encode_internal<'a, T: EncodeLengthDelimited<'a>>(
     let mut payload_iterator = value.get_payload_iterator();
     for _ in 0..length {
         let payload_byte = match payload_iterator.next() {
-            Some(byte) => byte.clone(),
+            Some(byte) => *byte,
             None => return Err(ProtoscopeRsError::LengthMismatch),
         };
         let output_byte = match iter.next() {
@@ -31,10 +31,7 @@ trait EncodeLengthDelimited<'a>: Encode<'a> {
 
 fn decode_internal<T: DecodeLengthDelimited>(iter: &mut ByteIterator) -> Result<T> {
     let length = i32::decode(iter)?;
-    let output_buffer: Vec<u8> = iter
-        .map(|byte| byte.clone())
-        .take(length as usize)
-        .collect();
+    let output_buffer: Vec<u8> = iter.copied().take(length as usize).collect();
     if output_buffer.len() != length as usize {
         return Err(ProtoscopeRsError::LengthMismatch);
     }
