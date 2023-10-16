@@ -4,6 +4,7 @@ use std::{error::Error, fmt::Display};
 pub enum RsProtocError {
     FilesystemError(String),
     LexError(String),
+    ParseError(String),
 }
 
 impl Display for RsProtocError {
@@ -15,6 +16,9 @@ impl Display for RsProtocError {
             }
             RsProtocError::LexError(error_message) => {
                 write!(f, "LexError[{}]", error_message)
+            }
+            RsProtocError::ParseError(error_message) => {
+                write!(f, "ParseError[{}]", error_message)
             }
         }
     }

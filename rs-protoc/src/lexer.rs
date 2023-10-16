@@ -5,7 +5,7 @@ use std::str::FromStr;
 
 use byteyarn::YarnBox;
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum TokenKind<'storage> {
     Identifier(YarnBox<'storage, str>),
     IntegerLiteral(u64),
@@ -69,13 +69,13 @@ pub enum TokenKind<'storage> {
     Error(String), /*TODO Add more information here for better diagnostics */
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TokenMetadata {
     span: Span,
     line_info: LineInfo,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Token<'storage> {
     pub kind: TokenKind<'storage>,
     pub metadata: TokenMetadata,
@@ -1042,14 +1042,14 @@ impl From<Radix> for u32 {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 struct LineInfo {
     line_start_offset_into_source: usize,
     line_number: usize,
     column_number: usize,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Span {
     start: usize,
     end: usize,
